@@ -1,6 +1,7 @@
 package db
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -24,12 +25,15 @@ type Options struct {
 
 // Open opens or creates a database at the given directory.
 func Open(opts Options) (*DB, error) {
+	if err := os.MkdirAll(opts.Dir, 0755); err != nil {
+		return nil, err
+	}
+
 	db := &DB{
 		dir:    opts.Dir,
 		active: memtable.NewSkipList(),
 	}
 
-	// Open WAL
 	walPath := filepath.Join(opts.Dir, "wal.log")
 	w, err := wal.Open(walPath)
 	if err != nil {

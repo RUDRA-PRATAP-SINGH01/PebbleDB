@@ -13,6 +13,9 @@ func (db *DB) Put(key, value []byte) error {
 	if err := db.wal.Append(rec); err != nil {
 		return err
 	}
+	if err := db.wal.Sync(); err != nil {
+		return err
+	}
 	db.active.Put(key, value)
 	return nil
 }
