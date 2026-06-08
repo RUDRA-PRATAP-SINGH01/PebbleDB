@@ -1,13 +1,12 @@
 package wal
 
 import (
-	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestWALAppendAndReplay(t *testing.T) {
-	path := "test_wal.log"
-	defer os.Remove(path)
+	path := filepath.Join(t.TempDir(), "wal.log")
 
 	w, err := Open(path)
 	if err != nil {
@@ -25,9 +24,10 @@ func TestWALAppendAndReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	w.Sync()
+	if err := w.Sync(); err != nil {
+		t.Fatal(err)
+	}
 
-	// Replay
 	var replayed []Record
 	err = Replay(path, func(r Record) error {
 		replayed = append(replayed, r)
@@ -41,26 +41,41 @@ func TestWALAppendAndReplay(t *testing.T) {
 	}
 	for i := range recs {
 		if string(replayed[i].Key) != string(recs[i].Key) {
-			t.Errorf("key mismatch")
+			t.Errorf("key mismatch at %d: got %q, want %q", i, replayed[i].Key, recs[i].Key)
 		}
 	}
 }
 
 func TestWALTruncate(t *testing.T) {
-	path := "test_wal_truncate.log"
-	defer os.Remove(path)
+	path := filepath.Join(t.TempDir(), "wal.log")
 
-	w, _ := Open(path)
-	w.Append(Record{Key: []byte("x"), Value: []byte("y")})
-	w.Truncate()
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// Replay should be empty
+	if err := w.Append(Record{Key: []byte("x"), Value: []byte("y")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Truncate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	count := 0
-	Replay(path, func(r Record) error {
+	err = Replay(path, func(r Record) error {
 		count++
 		return nil
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
-		t.Errorf("truncated WAL still has %d entries", count)
+		t.Errorf("truncated WAL still has %d entries, want 0", count)
 	}
 }

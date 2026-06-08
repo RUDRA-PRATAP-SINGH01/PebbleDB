@@ -17,6 +17,7 @@ type Record struct {
 
 // WAL manages the write-ahead log file.
 type WAL struct {
+	path string
 	file *os.File
 	mu   sync.Mutex
 }
@@ -27,7 +28,7 @@ func Open(path string) (*WAL, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &WAL{file: f}, nil
+	return &WAL{path: path, file: f}, nil
 }
 
 // Append writes a record to the WAL with checksum.
@@ -153,12 +154,24 @@ func Replay(path string, fn func(Record) error) error {
 }
 
 // Truncate clears the WAL file (called after successful flush).
+// Works reliably on all platforms by closing, truncating, and reopening.
 func (w *WAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := w.file.Truncate(0); err != nil {
+
+	if err := w.file.Sync(); err != nil {
 		return err
 	}
-	_, err := w.file.Seek(0, 0)
-	return err
+	if err := w.file.Close(); err != nil {
+		return err
+	}
+	if err := os.Truncate(w.path, 0); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	w.file = f
+	return nil
 }
