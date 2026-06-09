@@ -26,16 +26,15 @@ func NewWriter(path string, blockSize int) (*Writer, error) {
 	}, nil
 }
 
-func (w *Writer) Add(key, value []byte) error {
-	// Estimate size increase: keyLen(4) + key + valueLen(4) + value
-	entrySize := 4 + len(key) + 4 + len(value)
+func (w *Writer) Add(key, value []byte, tombstone bool) error {
+	entrySize := 4 + len(key) + 4 + len(value) + 1
 	if w.current.Size()+entrySize > w.blockSize && w.current.Size() > 0 {
 		if err := w.flushBlock(); err != nil {
 			return err
 		}
 	}
-	w.current.Append(key, value)
-	w.lastKey = key
+	w.current.Append(key, value, tombstone)
+	w.lastKey = append([]byte(nil), key...)
 	return nil
 }
 

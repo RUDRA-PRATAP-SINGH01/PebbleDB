@@ -49,7 +49,7 @@ func ReadFooter(r io.ReadSeeker) (*Footer, error) {
 	footer := &Footer{}
 	footer.Decode(buf)
 	if footer.Magic != magicNumber {
-		// fallback or error – we'll handle later
+		return nil, ErrBadMagic
 	}
 	return footer, nil
 }

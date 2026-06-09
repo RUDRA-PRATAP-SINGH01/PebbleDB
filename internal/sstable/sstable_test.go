@@ -25,14 +25,7 @@ func TestSSTableWriter(t *testing.T) {
 	it := mt.Iterator()
 	defer it.Close()
 	for it.Valid() {
-		if it.IsTombstone() {
-			// We'll write tombstone as empty value (or special marker)
-			// For now, just write empty value – but tombstones need to be stored.
-			// We'll store tombstone as a zero-length value? Actually we need a flag.
-			// Let's keep it simple: store empty value and rely on tombstone flag later.
-			// We'll add a tombstone flag in the future.
-		}
-		if err := w.Add(it.Key(), it.Value()); err != nil {
+		if err := w.Add(it.Key(), it.Value(), it.IsTombstone()); err != nil {
 			t.Fatal(err)
 		}
 		it.Next()
@@ -48,5 +41,53 @@ func TestSSTableWriter(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Error("SSTable file is empty")
+	}
+}
+
+func TestSSTableRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/test.sst"
+
+	mt := memtable.NewSkipList()
+	mt.Put([]byte("a"), []byte("1"))
+	mt.Put([]byte("b"), []byte("2"))
+	mt.Delete([]byte("c"))
+
+	w, err := NewWriter(path, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := mt.Iterator()
+	for it.Valid() {
+		if err := w.Add(it.Key(), it.Value(), it.IsTombstone()); err != nil {
+			t.Fatal(err)
+		}
+		it.Next()
+	}
+	it.Close()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	val, found, tomb, err := r.Get([]byte("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || tomb || string(val) != "1" {
+		t.Errorf("a: got val=%q, found=%v, tomb=%v; want 1, true, false", val, found, tomb)
+	}
+
+	_, found, tomb, err = r.Get([]byte("c"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || !tomb {
+		t.Errorf("c: found=%v, tomb=%v; want true, true", found, tomb)
 	}
 }
