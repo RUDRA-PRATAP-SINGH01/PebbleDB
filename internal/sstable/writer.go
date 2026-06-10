@@ -22,8 +22,16 @@ type Writer struct {
 }
 
 func NewWriter(path string, blockSize int) (*Writer, error) {
+	return NewWriterWithBloom(path, blockSize, defaultBloomExpectedEntries)
+}
+
+// NewWriterWithBloom creates a writer with a bloom filter sized for expectedEntries.
+func NewWriterWithBloom(path string, blockSize int, expectedEntries uint) (*Writer, error) {
 	if blockSize <= 0 {
 		return nil, ErrInvalidBlockSize
+	}
+	if expectedEntries < 1 {
+		expectedEntries = 1
 	}
 	tmpPath := path + ".tmp"
 	f, err := os.Create(tmpPath)
@@ -37,7 +45,7 @@ func NewWriter(path string, blockSize int) (*Writer, error) {
 		blockSize: blockSize,
 		current:   NewBlock(),
 		index:     &IndexBlock{},
-		bloom:     bloom.New(defaultBloomExpectedEntries, 0.01),
+		bloom:     bloom.New(expectedEntries, 0.01),
 	}, nil
 }
 

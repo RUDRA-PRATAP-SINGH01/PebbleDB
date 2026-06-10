@@ -79,3 +79,52 @@ func TestWALTruncate(t *testing.T) {
 		t.Errorf("truncated WAL still has %d entries, want 0", count)
 	}
 }
+
+func TestWALTruncateBefore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.Append(Record{Key: []byte("old1"), Value: []byte("a")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(Record{Key: []byte("old2"), Value: []byte("b")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
+	cutoff, err := w.Size()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.Append(Record{Key: []byte("new"), Value: []byte("c")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.TruncateBefore(cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var keys []string
+	err = Replay(path, func(r Record) error {
+		keys = append(keys, string(r.Key))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0] != "new" {
+		t.Errorf("got keys %v, want [new]", keys)
+	}
+}

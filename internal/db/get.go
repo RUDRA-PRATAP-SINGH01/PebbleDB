@@ -4,30 +4,50 @@ import (
 	"errors"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
+	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/sstable"
 )
 
 var ErrNotFound = errors.New("key not found")
 var ErrClosed = errors.New("database closed")
 
+type memLookupResult int
+
+const (
+	memLookupMiss memLookupResult = iota
+	memLookupHit
+	memLookupTombstone
+)
+
 // Get retrieves the value for a key. Returns ErrNotFound if key does not exist
 // or is a tombstone.
 func (db *DB) Get(key []byte) ([]byte, error) {
 	db.mu.RLock()
-	defer db.mu.RUnlock()
 	if db.closed {
+		db.mu.RUnlock()
 		return nil, ErrClosed
 	}
 
-	if val, ok := db.getFromMemtable(db.active, key); ok {
+	if val, res := lookupMemtable(db.active, key); res == memLookupHit {
+		db.mu.RUnlock()
 		return val, nil
-	}
-	if val, ok := db.getFromMemtable(db.immutable, key); ok {
-		return val, nil
+	} else if res == memLookupTombstone {
+		db.mu.RUnlock()
+		return nil, ErrNotFound
 	}
 
-	// Search SSTables newest to oldest for the latest value.
-	for i := len(db.sstables) - 1; i >= 0; i-- {
-		val, found, tomb, err := db.sstables[i].Get(key)
+	if val, res := lookupMemtable(db.immutable, key); res == memLookupHit {
+		db.mu.RUnlock()
+		return val, nil
+	} else if res == memLookupTombstone {
+		db.mu.RUnlock()
+		return nil, ErrNotFound
+	}
+
+	readers := append([]*sstable.Reader(nil), db.sstables...)
+	db.mu.RUnlock()
+
+	for i := len(readers) - 1; i >= 0; i-- {
+		val, found, tomb, err := readers[i].Get(key)
 		if err != nil {
 			return nil, err
 		}
@@ -41,13 +61,16 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	return nil, ErrNotFound
 }
 
-func (db *DB) getFromMemtable(mt *memtable.SkipList, key []byte) ([]byte, bool) {
+func lookupMemtable(mt *memtable.SkipList, key []byte) ([]byte, memLookupResult) {
 	if mt == nil {
-		return nil, false
+		return nil, memLookupMiss
 	}
 	val, found, tombstone := mt.Get(key)
-	if !found || tombstone {
-		return nil, false
+	if !found {
+		return nil, memLookupMiss
 	}
-	return val, true
+	if tombstone {
+		return nil, memLookupTombstone
+	}
+	return val, memLookupHit
 }

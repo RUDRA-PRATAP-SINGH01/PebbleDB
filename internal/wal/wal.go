@@ -153,15 +153,72 @@ func Replay(path string, fn func(Record) error) error {
 	return nil
 }
 
-// Truncate clears the WAL file (called after successful flush).
-// Works reliably on all platforms by closing, truncating, and reopening.
-func (w *WAL) Truncate() error {
+// Size returns the current WAL file size in bytes.
+func (w *WAL) Size() (int64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	fi, err := w.file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
+
+// Truncate clears the entire WAL file.
+func (w *WAL) Truncate() error {
+	return w.TruncateBefore(1<<62) // truncate all bytes
+}
+
+// TruncateBefore removes the first truncateAt bytes and keeps the remainder.
+// Used after flush so records for the new active memtable are preserved.
+func (w *WAL) TruncateBefore(truncateAt int64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if truncateAt <= 0 {
+		return nil
+	}
 
 	if err := w.file.Sync(); err != nil {
 		return err
 	}
+
+	fi, err := w.file.Stat()
+	if err != nil {
+		return err
+	}
+	size := fi.Size()
+	if truncateAt >= size {
+		return w.reopenEmpty()
+	}
+
+	remaining := make([]byte, size-truncateAt)
+	if _, err := w.file.ReadAt(remaining, truncateAt); err != nil {
+		return err
+	}
+	if err := w.file.Close(); err != nil {
+		return err
+	}
+	if err := os.Truncate(w.path, 0); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(remaining); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	w.file = f
+	return nil
+}
+
+func (w *WAL) reopenEmpty() error {
 	if err := w.file.Close(); err != nil {
 		return err
 	}

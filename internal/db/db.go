@@ -34,6 +34,7 @@ type DB struct {
 	flushDone         chan struct{}
 	nextSSTID         uint64
 	memtableThreshold int64
+	walFreezeOffset int64 // WAL byte offset at immutable freeze; records after this belong to active
 }
 
 // Options control database behaviour.
@@ -143,11 +144,17 @@ func (db *DB) Close() error {
 	for {
 		var needFlush bool
 		db.mu.Lock()
-		if db.immutable == nil && db.active.Len() == 0 {
+		if db.immutable == nil && !memtableHasEntries(db.active) {
 			db.mu.Unlock()
 			break
 		}
-		if db.immutable == nil && db.active.Len() > 0 {
+		if db.immutable == nil && memtableHasEntries(db.active) {
+			offset, err := db.wal.Size()
+			if err != nil {
+				db.mu.Unlock()
+				return err
+			}
+			db.walFreezeOffset = offset
 			db.immutable = db.active
 			db.active = memtable.NewSkipList()
 			needFlush = true
@@ -175,6 +182,10 @@ func (db *DB) Close() error {
 		db.wal = nil
 	}
 	return nil
+}
+
+func memtableHasEntries(mt *memtable.SkipList) bool {
+	return mt != nil && mt.Len() > 0
 }
 
 func (db *DB) waitForImmutableDrain() {
