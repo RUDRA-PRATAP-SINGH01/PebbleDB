@@ -6,12 +6,15 @@ import (
 	"io"
 	"os"
 	"sort"
+
+	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/bloom"
 )
 
 type Reader struct {
 	file   *os.File
 	footer Footer
 	index  []IndexEntry
+	bloom  *bloom.Filter
 }
 
 func OpenReader(path string) (*Reader, error) {
@@ -23,6 +26,28 @@ func OpenReader(path string) (*Reader, error) {
 	if err != nil {
 		f.Close()
 		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	fileSize := fi.Size()
+	dataEnd := fileSize - int64(footerSize)
+
+	if int64(footer.IndexOffset) < 0 || int64(footer.IndexOffset+footer.IndexLength) > dataEnd {
+		f.Close()
+		return nil, ErrCorruptIndex
+	}
+	if footer.BloomLength > 0 {
+		if int64(footer.BloomOffset) < 0 || int64(footer.BloomOffset+footer.BloomLength) > dataEnd {
+			f.Close()
+			return nil, ErrCorruptBloom
+		}
+		if footer.BloomOffset < footer.IndexOffset+footer.IndexLength {
+			f.Close()
+			return nil, ErrCorruptBloom
+		}
 	}
 	if _, err := f.Seek(int64(footer.IndexOffset), io.SeekStart); err != nil {
 		f.Close()
@@ -38,7 +63,22 @@ func OpenReader(path string) (*Reader, error) {
 		f.Close()
 		return nil, err
 	}
-	return &Reader{file: f, footer: *footer, index: index}, nil
+
+	var bf *bloom.Filter
+	if footer.BloomLength > 0 {
+		bloomData := make([]byte, footer.BloomLength)
+		if _, err := f.ReadAt(bloomData, int64(footer.BloomOffset)); err != nil {
+			f.Close()
+			return nil, err
+		}
+		bf = bloom.Decode(bloomData)
+		if bf == nil {
+			f.Close()
+			return nil, ErrCorruptBloom
+		}
+	}
+
+	return &Reader{file: f, footer: *footer, index: index, bloom: bf}, nil
 }
 
 func decodeIndex(data []byte) ([]IndexEntry, error) {
@@ -72,6 +112,9 @@ func decodeIndex(data []byte) ([]IndexEntry, error) {
 }
 
 func (r *Reader) Get(key []byte) (value []byte, found bool, tombstone bool, err error) {
+	if r.bloom != nil && !r.bloom.MayContain(key) {
+		return nil, false, false, nil
+	}
 	idx := sort.Search(len(r.index), func(i int) bool {
 		return bytes.Compare(key, r.index[i].LastKey) <= 0
 	})

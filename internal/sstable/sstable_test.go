@@ -91,3 +91,41 @@ func TestSSTableRoundTrip(t *testing.T) {
 		t.Errorf("c: found=%v, tomb=%v; want true, true", found, tomb)
 	}
 }
+
+func TestSSTableBloomFilterSkip(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/test.sst"
+
+	mt := memtable.NewSkipList()
+	mt.Put([]byte("a"), []byte("1"))
+
+	w, err := NewWriter(path, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := mt.Iterator()
+	for it.Valid() {
+		if err := w.Add(it.Key(), it.Value(), it.IsTombstone()); err != nil {
+			t.Fatal(err)
+		}
+		it.Next()
+	}
+	it.Close()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	_, found, _, err := r.Get([]byte("not-in-table"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Error("key not in SSTable should not be found")
+	}
+}

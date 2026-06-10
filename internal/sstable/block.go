@@ -2,6 +2,7 @@ package sstable
 
 import (
 	"encoding/binary"
+	"math"
 )
 
 // Block stores a sequence of sorted key-value pairs.
@@ -16,7 +17,10 @@ func NewBlock() *Block {
 }
 
 // Append adds a key-value pair to the block.
-func (b *Block) Append(key, value []byte, tombstone bool) {
+func (b *Block) Append(key, value []byte, tombstone bool) error {
+	if len(key) > math.MaxUint32 || len(value) > math.MaxUint32 {
+		return ErrKeyTooLarge
+	}
 	keyLen := uint32(len(key))
 	valLen := uint32(len(value))
 	tombByte := byte(0)
@@ -30,6 +34,7 @@ func (b *Block) Append(key, value []byte, tombstone bool) {
 	buf = append(buf, value...)
 	buf = append(buf, tombByte)
 	b.data = append(b.data, buf...)
+	return nil
 }
 
 // Size returns the current size of the block in bytes.
@@ -92,6 +97,18 @@ func (it *BlockIterator) Next() bool {
 	return true
 }
 
-func (it *BlockIterator) Key() []byte { return it.key }
-func (it *BlockIterator) Value() []byte { return it.val }
+func (it *BlockIterator) Key() []byte {
+	if it.key == nil {
+		return nil
+	}
+	return append([]byte(nil), it.key...)
+}
+
+func (it *BlockIterator) Value() []byte {
+	if it.val == nil {
+		return nil
+	}
+	return append([]byte(nil), it.val...)
+}
+
 func (it *BlockIterator) IsTombstone() bool { return it.tombstone }
