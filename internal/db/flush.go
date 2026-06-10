@@ -24,12 +24,16 @@ func (db *DB) flusher() {
 		db.mu.Unlock()
 
 		if err := db.flushImmutable(imm, walCutoff); err != nil {
+			db.setBackgroundErr("flush", err)
 			db.restoreFailedFlush(imm, walCutoff)
 			select {
 			case db.flushCh <- struct{}{}:
 			default:
 			}
+			continue
 		}
+		db.clearBackgroundErr()
+		db.maybeCompact()
 	}
 	close(db.flushDone)
 }
@@ -92,7 +96,6 @@ func (db *DB) restoreFailedFlush(imm *memtable.SkipList, walCutoff int64) {
 		return
 	}
 
-	// Another immutable is already queued; merge failed memtable into it.
 	it := imm.Iterator()
 	for it.Valid() {
 		if it.IsTombstone() {

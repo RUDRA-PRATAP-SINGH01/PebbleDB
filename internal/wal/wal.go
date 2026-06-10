@@ -17,18 +17,24 @@ type Record struct {
 
 // WAL manages the write-ahead log file.
 type WAL struct {
-	path string
-	file *os.File
-	mu   sync.Mutex
+	path   string
+	file   *os.File
+	mu     sync.Mutex
+	limits ReplayLimits
 }
 
 // Open creates or opens the WAL file at the given path.
 func Open(path string) (*WAL, error) {
+	return OpenWithLimits(path, DefaultReplayLimits())
+}
+
+// OpenWithLimits opens a WAL with append size validation.
+func OpenWithLimits(path string, limits ReplayLimits) (*WAL, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, err
 	}
-	return &WAL{path: path, file: f}, nil
+	return &WAL{path: path, file: f, limits: limits.WithDefaults()}, nil
 }
 
 // Append writes a record to the WAL with checksum.
@@ -37,29 +43,27 @@ func (w *WAL) Append(rec Record) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Calculate sizes
 	keyLen := len(rec.Key)
 	valueLen := len(rec.Value)
+	if err := w.limits.validateRecord(uint32(keyLen), uint32(valueLen)); err != nil {
+		return err
+	}
+
 	tombByte := byte(0)
 	if rec.Tombstone {
 		tombByte = 1
 	}
 
-	// Buffer for writing (pre-allocate approximate size)
 	buf := make([]byte, 0, 4+keyLen+4+valueLen+1+4)
 
-	// Write key length and key
 	buf = binary.BigEndian.AppendUint32(buf, uint32(keyLen))
 	buf = append(buf, rec.Key...)
 
-	// Write value length and value
 	buf = binary.BigEndian.AppendUint32(buf, uint32(valueLen))
 	buf = append(buf, rec.Value...)
 
-	// Write tombstone flag
 	buf = append(buf, tombByte)
 
-	// Compute checksum over everything except the checksum field
 	checksum := crc32.ChecksumIEEE(buf)
 	buf = binary.BigEndian.AppendUint32(buf, checksum)
 
@@ -87,14 +91,29 @@ func (w *WAL) Close() error {
 // Replay reads all records from the WAL and calls the given function for each.
 // It verifies checksums and stops on any corruption.
 func Replay(path string, fn func(Record) error) error {
+	return ReplayWithLimits(path, DefaultReplayLimits(), fn)
+}
+
+// ReplayWithLimits replays a WAL file with size bounds to prevent OOM on corrupt data.
+func ReplayWithLimits(path string, limits ReplayLimits, fn func(Record) error) error {
+	limits = limits.WithDefaults()
+
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // no WAL, nothing to replay
+			return nil
 		}
 		return err
 	}
 	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if fi.Size() > limits.MaxFileSize {
+		return ErrWALTooLarge
+	}
 
 	for {
 		var keyLen uint32
@@ -104,6 +123,9 @@ func Replay(path string, fn func(Record) error) error {
 		}
 		if err != nil {
 			return err
+		}
+		if keyLen > limits.MaxKeySize {
+			return ErrKeyTooLarge
 		}
 
 		key := make([]byte, keyLen)
@@ -115,6 +137,13 @@ func Replay(path string, fn func(Record) error) error {
 		if err := binary.Read(f, binary.BigEndian, &valueLen); err != nil {
 			return err
 		}
+		if valueLen > limits.MaxValueSize {
+			return ErrValueTooLarge
+		}
+		if err := limits.validateRecord(keyLen, valueLen); err != nil {
+			return err
+		}
+
 		value := make([]byte, valueLen)
 		if _, err := io.ReadFull(f, value); err != nil {
 			return err
@@ -130,7 +159,6 @@ func Replay(path string, fn func(Record) error) error {
 			return err
 		}
 
-		// Recompute checksum to verify
 		buf := make([]byte, 0, 4+int(keyLen)+4+int(valueLen)+1)
 		buf = binary.BigEndian.AppendUint32(buf, keyLen)
 		buf = append(buf, key...)
@@ -138,7 +166,7 @@ func Replay(path string, fn func(Record) error) error {
 		buf = append(buf, value...)
 		buf = append(buf, tombByte)
 		if crc32.ChecksumIEEE(buf) != checksum {
-			return io.ErrUnexpectedEOF // corruption
+			return io.ErrUnexpectedEOF
 		}
 
 		rec := Record{
@@ -166,7 +194,7 @@ func (w *WAL) Size() (int64, error) {
 
 // Truncate clears the entire WAL file.
 func (w *WAL) Truncate() error {
-	return w.TruncateBefore(1<<62) // truncate all bytes
+	return w.TruncateBefore(1 << 62)
 }
 
 // TruncateBefore removes the first truncateAt bytes and keeps the remainder.
@@ -192,26 +220,57 @@ func (w *WAL) TruncateBefore(truncateAt int64) error {
 		return w.reopenEmpty()
 	}
 
-	remaining := make([]byte, size-truncateAt)
-	if _, err := w.file.ReadAt(remaining, truncateAt); err != nil {
+	tmpPath := w.path + ".truncate"
+	tmp, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	remaining := size - truncateAt
+	const chunkSize = 64 * 1024
+	buf := make([]byte, chunkSize)
+	var copied int64
+	for copied < remaining {
+		toRead := int64(len(buf))
+		if remaining-copied < toRead {
+			toRead = remaining - copied
+		}
+		n, err := w.file.ReadAt(buf[:toRead], truncateAt+copied)
+		if err != nil && err != io.EOF {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return err
+		}
+		if n == 0 {
+			break
+		}
+		if _, err := tmp.Write(buf[:n]); err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return err
+		}
+		copied += int64(n)
+	}
+
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
 		return err
 	}
 	if err := w.file.Close(); err != nil {
+		os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Truncate(w.path, 0); err != nil {
+	if err := os.Rename(tmpPath, w.path); err != nil {
+		os.Remove(tmpPath)
 		return err
 	}
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
-		return err
-	}
-	if _, err := f.Write(remaining); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
 		return err
 	}
 	w.file = f

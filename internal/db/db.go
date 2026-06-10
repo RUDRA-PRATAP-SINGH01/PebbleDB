@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
@@ -23,24 +24,29 @@ var sstFilePattern = regexp.MustCompile(`^sst_(\d{8})\.sst$`)
 
 // DB is the main database handle.
 type DB struct {
-	mu                sync.RWMutex
-	dir               string
-	active            *memtable.SkipList
-	immutable         *memtable.SkipList
-	sstables          []*sstable.Reader
-	wal               *wal.WAL
-	closed            bool
-	flushCh           chan struct{}
-	flushDone         chan struct{}
-	nextSSTID         uint64
-	memtableThreshold int64
-	walFreezeOffset int64 // WAL byte offset at immutable freeze; records after this belong to active
+	mu                  sync.RWMutex
+	dir                 string
+	active              *memtable.SkipList
+	immutable           *memtable.SkipList
+	sstables            []*sstable.Reader
+	wal                 *wal.WAL
+	closed              bool
+	flushCh             chan struct{}
+	flushDone           chan struct{}
+	nextSSTID           uint64
+	memtableThreshold   int64
+	compactionThreshold int
+	walLimits           wal.ReplayLimits
+	walFreezeOffset     int64
+	bgErr               atomic.Pointer[BackgroundError]
 }
 
 // Options control database behaviour.
 type Options struct {
 	Dir                   string
 	MemtableSizeThreshold int64 // bytes; 0 uses default (4096)
+	CompactionThreshold   int   // SSTable count before compaction; 0 uses default (4)
+	WALReplayLimits       wal.ReplayLimits
 }
 
 // Open opens or creates a database at the given directory.
@@ -54,22 +60,31 @@ func Open(opts Options) (*DB, error) {
 		threshold = defaultMemtableSizeThreshold
 	}
 
+	compactionThreshold := opts.CompactionThreshold
+	if compactionThreshold == 0 {
+		compactionThreshold = defaultCompactionThreshold
+	}
+
+	walLimits := opts.WALReplayLimits.normalized()
+
 	db := &DB{
-		dir:               opts.Dir,
-		active:            memtable.NewSkipList(),
-		memtableThreshold: threshold,
-		flushCh:           make(chan struct{}, 8),
-		flushDone:         make(chan struct{}),
+		dir:                 opts.Dir,
+		active:              memtable.NewSkipList(),
+		memtableThreshold:   threshold,
+		compactionThreshold: compactionThreshold,
+		walLimits:           walLimits,
+		flushCh:             make(chan struct{}, 8),
+		flushDone:           make(chan struct{}),
 	}
 
 	walPath := filepath.Join(opts.Dir, "wal.log")
-	w, err := wal.Open(walPath)
+	w, err := wal.OpenWithLimits(walPath, walLimits)
 	if err != nil {
 		return nil, err
 	}
 	db.wal = w
 
-	err = wal.Replay(walPath, func(rec wal.Record) error {
+	err = wal.ReplayWithLimits(walPath, walLimits, func(rec wal.Record) error {
 		if rec.Tombstone {
 			db.active.Delete(rec.Key)
 		} else {
@@ -117,7 +132,7 @@ func (db *DB) loadSSTables() error {
 		files = append(files, sstFile{id: id, path: filepath.Join(db.dir, e.Name())})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].id < files[j].id })
-
+	walLimits := opts.WALReplayLimits.WithDefaults()
 	for _, f := range files {
 		r, err := sstable.OpenReader(f.path)
 		if err != nil {
@@ -129,6 +144,29 @@ func (db *DB) loadSSTables() error {
 		}
 	}
 	return nil
+}
+
+func (db *DB) setBackgroundErr(op string, err error) {
+	if err == nil {
+		return
+	}
+	db.bgErr.Store(&BackgroundError{Op: op, Err: err})
+}
+
+func (db *DB) clearBackgroundErr() {
+	db.bgErr.Store(nil)
+}
+
+func (db *DB) backgroundErr() error {
+	if p := db.bgErr.Load(); p != nil {
+		return p
+	}
+	return nil
+}
+
+// BackgroundError returns the most recent background flush or compaction error, if any.
+func (db *DB) BackgroundError() error {
+	return db.backgroundErr()
 }
 
 // Close flushes pending data and closes the database.

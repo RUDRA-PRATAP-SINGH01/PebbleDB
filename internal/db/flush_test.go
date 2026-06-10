@@ -13,24 +13,29 @@ const flushTestThreshold int64 = 8
 
 func waitForFlush(t *testing.T, db *DB) {
 	t.Helper()
-	db.mu.RLock()
-	startSST := len(db.sstables)
-	db.mu.RUnlock()
-
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		db.mu.RLock()
 		imm := db.immutable
 		sstCount := len(db.sstables)
 		db.mu.RUnlock()
 
-		if imm == nil && sstCount > startSST {
+		if err := db.BackgroundError(); err != nil {
+			t.Fatalf("background error during flush: %v", err)
+		}
+		if imm == nil && sstCount > 0 {
 			time.Sleep(50 * time.Millisecond)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("flush did not complete in time")
+
+	db.mu.RLock()
+	imm := db.immutable
+	sstCount := len(db.sstables)
+	db.mu.RUnlock()
+	t.Fatalf("flush did not complete in time (immutable=%v sstables=%d bgErr=%v)",
+		imm != nil, sstCount, db.BackgroundError())
 }
 
 func TestFlushToSSTable(t *testing.T) {

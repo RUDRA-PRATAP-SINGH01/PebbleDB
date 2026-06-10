@@ -3,6 +3,10 @@ package db
 import "github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/wal"
 
 func (db *DB) writeRecord(rec wal.Record, apply func()) error {
+	if err := db.backgroundErr(); err != nil {
+		return err
+	}
+
 	db.mu.Lock()
 	if db.closed {
 		db.mu.Unlock()

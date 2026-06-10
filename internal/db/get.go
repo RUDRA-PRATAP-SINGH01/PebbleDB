@@ -1,14 +1,9 @@
 package db
 
 import (
-	"errors"
-
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/sstable"
 )
-
-var ErrNotFound = errors.New("key not found")
-var ErrClosed = errors.New("database closed")
 
 type memLookupResult int
 

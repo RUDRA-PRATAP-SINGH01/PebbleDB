@@ -1,6 +1,8 @@
 package wal
 
 import (
+	"encoding/binary"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -126,5 +128,40 @@ func TestWALTruncateBefore(t *testing.T) {
 	}
 	if len(keys) != 1 || keys[0] != "new" {
 		t.Errorf("got keys %v, want [new]", keys)
+	}
+}
+
+func TestReplayRejectsOversizedKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(f, binary.BigEndian, uint32(1024)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	limits := ReplayLimits{MaxFileSize: 4096, MaxKeySize: 16, MaxValueSize: 16, MaxRecordSize: 64}
+	err = ReplayWithLimits(path, limits, func(Record) error { return nil })
+	if err != ErrKeyTooLarge {
+		t.Fatalf("got %v, want ErrKeyTooLarge", err)
+	}
+}
+
+func TestAppendRejectsOversizedRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+	limits := ReplayLimits{MaxFileSize: 4096, MaxKeySize: 8, MaxValueSize: 8, MaxRecordSize: 32}
+	w, err := OpenWithLimits(path, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	err = w.Append(Record{Key: []byte("123456789"), Value: []byte("x")})
+	if err != ErrKeyTooLarge {
+		t.Fatalf("got %v, want ErrKeyTooLarge", err)
 	}
 }
