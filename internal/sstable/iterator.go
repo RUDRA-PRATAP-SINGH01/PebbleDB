@@ -1,6 +1,9 @@
 package sstable
 
-import "bytes"
+import (
+	"bytes"
+	"sort"
+)
 
 // Iterator walks all entries in an SSTable in ascending key order.
 type Iterator struct {
@@ -58,6 +61,55 @@ func (it *Iterator) Next() {
 		return
 	}
 	it.advance()
+}
+
+// Seek positions at the first entry with key >= target.
+func (it *Iterator) Seek(key []byte) error {
+	it.err = nil
+	if len(it.reader.index) == 0 {
+		it.valid = false
+		return nil
+	}
+	if len(key) == 0 {
+		it.blockIdx = -1
+		it.blockIt = nil
+		it.advance()
+		return it.err
+	}
+	idx := sort.Search(len(it.reader.index), func(i int) bool {
+		return bytes.Compare(key, it.reader.index[i].LastKey) <= 0
+	})
+	if idx >= len(it.reader.index) {
+		it.valid = false
+		return nil
+	}
+	for bi := idx; bi < len(it.reader.index); bi++ {
+		entry := it.reader.index[bi]
+		blockData := make([]byte, entry.Length)
+		if _, err := it.reader.file.ReadAt(blockData, int64(entry.Offset)); err != nil {
+			it.err = err
+			it.valid = false
+			return err
+		}
+		blockIt := NewBlockIterator(blockData)
+		if blockIt.Seek(key) {
+			it.blockIdx = bi
+			it.blockIt = blockIt
+			it.key = blockIt.Key()
+			it.value = blockIt.Value()
+			it.tombstone = blockIt.IsTombstone()
+			it.valid = true
+			return nil
+		}
+	}
+	it.valid = false
+	return nil
+}
+
+// Close releases iterator resources (no-op for SSTable iterators).
+func (it *Iterator) Close() error {
+	it.valid = false
+	return nil
 }
 
 func (it *Iterator) advance() {

@@ -1,0 +1,154 @@
+package iterator
+
+import "bytes"
+
+type source struct {
+	it       Iterator
+	priority int
+}
+
+// MergeIterator merges multiple iterators; newer sources (higher priority) win.
+// Tombstones are skipped and never returned to the caller.
+type MergeIterator struct {
+	sources []source
+	key     []byte
+	value   []byte
+	valid   bool
+	err     error
+}
+
+// NewMergeIterator creates a merge iterator over sources with matching priorities.
+// priorities[i] applies to sources[i]; larger values are newer.
+func NewMergeIterator(sources []Iterator, priorities []int) (*MergeIterator, error) {
+	if len(sources) != len(priorities) {
+		return nil, ErrPriorityMismatch
+	}
+	m := &MergeIterator{
+		sources: make([]source, len(sources)),
+	}
+	for i := range sources {
+		m.sources[i] = source{it: sources[i], priority: priorities[i]}
+	}
+	return m, nil
+}
+
+// Seek positions all sources and loads the first visible entry at or after key.
+func (m *MergeIterator) Seek(key []byte) error {
+	m.err = nil
+	for _, s := range m.sources {
+		if err := s.it.Seek(key); err != nil {
+			m.err = err
+			m.valid = false
+			return err
+		}
+	}
+	return m.advance()
+}
+
+func (m *MergeIterator) Valid() bool {
+	return m.valid && m.err == nil
+}
+
+func (m *MergeIterator) Key() []byte {
+	if m.key == nil {
+		return nil
+	}
+	return append([]byte(nil), m.key...)
+}
+
+func (m *MergeIterator) Value() []byte {
+	if m.value == nil {
+		return nil
+	}
+	return append([]byte(nil), m.value...)
+}
+
+func (m *MergeIterator) IsTombstone() bool {
+	return false
+}
+
+func (m *MergeIterator) Next() error {
+	if m.err != nil {
+		return m.err
+	}
+	return m.advance()
+}
+
+func (m *MergeIterator) Close() error {
+	var first error
+	for _, s := range m.sources {
+		if err := s.it.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	m.valid = false
+	return first
+}
+
+func (m *MergeIterator) Err() error {
+	return m.err
+}
+
+func (m *MergeIterator) advance() error {
+	for {
+		minKey := m.minKey()
+		if minKey == nil {
+			m.valid = false
+			m.key = nil
+			m.value = nil
+			return m.err
+		}
+
+		bestPri := -1
+		var winnerKey, winnerVal []byte
+		winnerTomb := false
+		var toAdvance []Iterator
+
+		for _, s := range m.sources {
+			if !s.it.Valid() {
+				continue
+			}
+			if bytes.Compare(s.it.Key(), minKey) != 0 {
+				continue
+			}
+			if s.priority > bestPri {
+				bestPri = s.priority
+				winnerKey = s.it.Key()
+				winnerVal = s.it.Value()
+				winnerTomb = s.it.IsTombstone()
+			}
+			toAdvance = append(toAdvance, s.it)
+		}
+
+		for _, it := range toAdvance {
+			if err := it.Next(); err != nil {
+				m.err = err
+				m.valid = false
+				return err
+			}
+		}
+
+		if winnerTomb {
+			continue
+		}
+
+		m.key = winnerKey
+		m.value = winnerVal
+		m.valid = true
+		return nil
+	}
+}
+
+func (m *MergeIterator) minKey() []byte {
+	var minKey []byte
+	for _, s := range m.sources {
+		if !s.it.Valid() {
+			continue
+		}
+		k := s.it.Key()
+		if minKey == nil || bytes.Compare(k, minKey) < 0 {
+			minKey = k
+		}
+	}
+	return minKey
+}

@@ -30,6 +30,25 @@ func (it *SkipListIterator) Next() {
 	}
 }
 
+// Seek positions the iterator at the first entry with key >= target.
+func (it *SkipListIterator) Seek(key []byte) {
+	if it.sl == nil {
+		it.node = nil
+		return
+	}
+	if len(key) == 0 {
+		it.node = it.sl.head.next[0]
+		return
+	}
+	x := it.sl.head
+	for i := it.sl.height - 1; i >= 0; i-- {
+		for x.next[i] != nil && less(x.next[i].key, key) {
+			x = x.next[i]
+		}
+	}
+	it.node = x.next[0]
+}
+
 // Key returns a copy of the current key. Callers may mutate the returned slice
 // without affecting the skip list.
 func (it *SkipListIterator) Key() []byte {

@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 )
@@ -112,3 +113,19 @@ func (it *BlockIterator) Value() []byte {
 }
 
 func (it *BlockIterator) IsTombstone() bool { return it.tombstone }
+
+// Seek positions at the first entry with key >= target. Returns false if none.
+func (it *BlockIterator) Seek(key []byte) bool {
+	it.pos = 0
+	it.key = nil
+	it.val = nil
+	it.tombstone = false
+	for it.Next() {
+		if bytes.Compare(it.key, key) >= 0 {
+			return true
+		}
+	}
+	it.key = nil
+	it.val = nil
+	return false
+}
