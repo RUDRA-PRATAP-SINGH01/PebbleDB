@@ -1,7 +1,6 @@
 package manifest
 
 import (
-	"bufio"
 	"encoding/binary"
 	"io"
 	"os"
@@ -98,36 +97,90 @@ func (l *Log) replay() error {
 	if _, err := l.file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	br := bufio.NewReader(l.file)
+
+	validEnd := int64(0)
 	for {
-		header := make([]byte, 4)
-		if _, err := io.ReadFull(br, header); err != nil {
-			if err == io.EOF {
-				break
-			}
+		recordStart, err := l.file.Seek(0, io.SeekCurrent)
+		if err != nil {
 			return err
 		}
+
+		header := make([]byte, 4)
+		_, err = io.ReadFull(l.file, header)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return l.salvageManifestTail(validEnd, err)
+		}
+
 		recordLen := binary.BigEndian.Uint32(header)
 		if recordLen < 4 {
-			return io.ErrUnexpectedEOF
+			return l.salvageManifestTail(validEnd, io.ErrUnexpectedEOF)
 		}
+
 		rest := make([]byte, recordLen)
-		if _, err := io.ReadFull(br, rest); err != nil {
-			return err
+		if _, err := io.ReadFull(l.file, rest); err != nil {
+			return l.salvageManifestTail(validEnd, err)
 		}
+
 		record := append(header, rest...)
 		payload, err := decodeRecord(record)
 		if err != nil {
-			return err
+			return l.salvageManifestTail(validEnd, err)
 		}
 		if err := applyEdit(l.liveSet, payload); err != nil {
 			return err
 		}
+		validEnd = recordStart + int64(len(record))
 	}
-	if _, err := l.file.Seek(0, io.SeekEnd); err != nil {
+
+	end, err := l.file.Seek(0, io.SeekEnd)
+	if err != nil {
 		return err
 	}
+	if validEnd < end {
+		if err := l.truncateTo(validEnd); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// truncateTo shortens the manifest file. On Windows the file must be closed
+// before os.Truncate; reopen for subsequent appends.
+func (l *Log) truncateTo(validEnd int64) error {
+	if err := l.file.Sync(); err != nil {
+		return err
+	}
+	fi, err := l.file.Stat()
+	if err != nil {
+		return err
+	}
+	if validEnd >= fi.Size() {
+		_, err := l.file.Seek(0, io.SeekEnd)
+		return err
+	}
+	if err := l.file.Close(); err != nil {
+		return err
+	}
+	if err := os.Truncate(l.path, validEnd); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	l.file = f
+	_, err = l.file.Seek(0, io.SeekEnd)
+	return err
+}
+
+func (l *Log) salvageManifestTail(validEnd int64, cause error) error {
+	if cause != io.EOF && cause != io.ErrUnexpectedEOF {
+		return cause
+	}
+	return l.truncateTo(validEnd)
 }
 
 // LiveIDs returns sorted live SSTable IDs.

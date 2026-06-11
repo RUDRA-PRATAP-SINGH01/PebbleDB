@@ -15,14 +15,24 @@ const (
 
 // ScanIterator walks keys in [start, end) across memtables and SSTables.
 type ScanIterator struct {
-	merge    *iterator.MergeIterator
-	end      []byte
-	readers  []*sstable.Reader
-	closed   bool
+	db    *DB
+	merge *iterator.MergeIterator
+	end   []byte
+	readers []*sstable.Reader
+	closed  bool
 }
 
 func (it *ScanIterator) Valid() bool {
-	if it.closed || it.merge == nil || !it.merge.Valid() {
+	if it.closed || it.db == nil {
+		return false
+	}
+	it.db.mu.RLock()
+	closed := it.db.closed
+	it.db.mu.RUnlock()
+	if closed {
+		return false
+	}
+	if it.merge == nil || !it.merge.Valid() {
 		return false
 	}
 	if len(it.end) == 0 {
@@ -40,6 +50,12 @@ func (it *ScanIterator) Next() error {
 	if it.closed {
 		return ErrClosed
 	}
+	it.db.mu.RLock()
+	closed := it.db.closed
+	it.db.mu.RUnlock()
+	if closed {
+		return ErrClosed
+	}
 	if err := it.merge.Next(); err != nil {
 		return err
 	}
@@ -48,6 +64,12 @@ func (it *ScanIterator) Next() error {
 
 func (it *ScanIterator) Seek(key []byte) error {
 	if it.closed {
+		return ErrClosed
+	}
+	it.db.mu.RLock()
+	closed := it.db.closed
+	it.db.mu.RUnlock()
+	if closed {
 		return ErrClosed
 	}
 	return it.merge.Seek(key)
@@ -72,6 +94,10 @@ func (it *ScanIterator) Close() error {
 // Scan returns an iterator over keys in the half-open range [start, end).
 // A nil or empty end scans to the last key.
 func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
+	if err := db.backgroundErr(); err != nil {
+		return nil, err
+	}
+
 	db.mu.RLock()
 	if db.closed {
 		db.mu.RUnlock()
@@ -85,10 +111,11 @@ func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
 	sources = append(sources, activeIt)
 	priorities = append(priorities, scanPriorityActive)
 
-	if db.immutable != nil {
-		immIt := &memtableIter{it: db.immutable.Iterator()}
+	for i := len(db.pendingFlush) - 1; i >= 0; i-- {
+		immIt := &memtableIter{it: db.pendingFlush[i].mem.Iterator()}
 		sources = append(sources, immIt)
-		priorities = append(priorities, scanPriorityImmutable)
+		pri := scanPriorityImmutable - (len(db.pendingFlush) - 1 - i)
+		priorities = append(priorities, pri)
 	}
 
 	readers := append([]*sstable.Reader(nil), db.sstables...)
@@ -118,6 +145,7 @@ func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
 	}
 
 	return &ScanIterator{
+		db:      db,
 		merge:   merge,
 		end:     append([]byte(nil), end...),
 		readers: readers,

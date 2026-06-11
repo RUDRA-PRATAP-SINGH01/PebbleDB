@@ -16,6 +16,10 @@ const (
 // Get retrieves the value for a key. Returns ErrNotFound if key does not exist
 // or is a tombstone.
 func (db *DB) Get(key []byte) ([]byte, error) {
+	if err := db.backgroundErr(); err != nil {
+		return nil, err
+	}
+
 	db.mu.RLock()
 	if db.closed {
 		db.mu.RUnlock()
@@ -30,12 +34,14 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 
-	if val, res := lookupMemtable(db.immutable, key); res == memLookupHit {
-		db.mu.RUnlock()
-		return val, nil
-	} else if res == memLookupTombstone {
-		db.mu.RUnlock()
-		return nil, ErrNotFound
+	for i := len(db.pendingFlush) - 1; i >= 0; i-- {
+		if val, res := lookupMemtable(db.pendingFlush[i].mem, key); res == memLookupHit {
+			db.mu.RUnlock()
+			return val, nil
+		} else if res == memLookupTombstone {
+			db.mu.RUnlock()
+			return nil, ErrNotFound
+		}
 	}
 
 	readers := append([]*sstable.Reader(nil), db.sstables...)

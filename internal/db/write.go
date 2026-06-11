@@ -27,10 +27,7 @@ func (db *DB) writeRecord(rec wal.Record, apply func()) error {
 		return err
 	}
 	if shouldFlush {
-		select {
-		case db.flushCh <- struct{}{}:
-		default:
-		}
+		db.notifyFlush()
 	}
 	return nil
 }

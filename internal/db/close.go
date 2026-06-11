@@ -19,36 +19,37 @@ func (db *DB) Close() error {
 	for {
 		var needFlush bool
 		db.mu.Lock()
-		if db.immutable == nil && db.active.Size() <= 0 {
+		if !db.hasPendingFlush() && db.active.Size() <= 0 {
 			db.mu.Unlock()
 			break
 		}
-		if db.immutable == nil && db.active.Size() > 0 {
+		if db.active.Size() > 0 {
 			offset, err := db.wal.Size()
 			if err != nil {
 				db.mu.Unlock()
 				return err
 			}
-			db.walFreezeOffset = offset
-			db.immutable = db.active
+			db.pendingFlush = append(db.pendingFlush, flushQueueEntry{
+				mem:       db.active,
+				walCutoff: offset,
+			})
 			db.active = memtable.NewSkipList()
 			needFlush = true
 		}
 		db.mu.Unlock()
 
 		if needFlush {
-			select {
-			case db.flushCh <- struct{}{}:
-			default:
-			}
+			db.notifyFlush()
 		}
-		db.waitForImmutableDrain()
+		db.waitForPendingFlushDrain()
 	}
 
 	close(db.flushCh)
 	<-db.flushDone
 
+	db.compactMu.Lock()
 	close(db.compactCh)
+	db.compactMu.Unlock()
 	<-db.compactDone
 
 	db.mu.Lock()
@@ -69,12 +70,12 @@ func (db *DB) Close() error {
 	return nil
 }
 
-func (db *DB) waitForImmutableDrain() {
+func (db *DB) waitForPendingFlushDrain() {
 	for {
 		db.mu.RLock()
-		imm := db.immutable
+		pending := db.hasPendingFlush()
 		db.mu.RUnlock()
-		if imm == nil {
+		if !pending {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)

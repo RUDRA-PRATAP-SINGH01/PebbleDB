@@ -164,6 +164,82 @@ func TestWALTruncateBefore(t *testing.T) {
 	}
 }
 
+func TestReplaySalvagesTrailingPartialRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(Record{Key: []byte("ok"), Value: []byte("v")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{0, 0, 0, 5}); err != nil { // partial key length only
+		t.Fatal(err)
+	}
+	f.Close()
+
+	count := 0
+	_, err = ReplayFromWithRecovery(path, DefaultReplayLimits(), 0, func(Record) error {
+		count++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("replay with recovery: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("replayed %d records, want 1", count)
+	}
+}
+
+func TestReplayFromOffsetSkipsPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(Record{Key: []byte("old"), Value: []byte("1")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	cutoff, err := w.Size()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(Record{Key: []byte("new"), Value: []byte("2")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var keys []string
+	_, err = ReplayFromWithRecovery(path, DefaultReplayLimits(), cutoff, func(r Record) error {
+		keys = append(keys, string(r.Key))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0] != "new" {
+		t.Fatalf("got %v, want [new]", keys)
+	}
+}
+
 func TestReplayRejectsOversizedKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.log")
 	f, err := os.Create(path)

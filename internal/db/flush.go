@@ -16,33 +16,46 @@ const flushRetryDelay = 100 * time.Millisecond
 
 func (db *DB) flusher() {
 	for range db.flushCh {
+		db.drainPendingFlush()
+	}
+	close(db.flushDone)
+}
+
+// drainPendingFlush processes every queued memtable per wakeup so dropped
+// flush signals cannot leave entries stuck in pendingFlush.
+func (db *DB) drainPendingFlush() {
+	for {
 		db.mu.Lock()
-		if db.immutable == nil {
+		if len(db.pendingFlush) == 0 {
 			db.mu.Unlock()
-			continue
+			return
 		}
-		imm := db.immutable
-		walCutoff := db.walFreezeOffset
+		entry := db.pendingFlush[0]
 		db.mu.Unlock()
 
-		if err := db.flushImmutable(imm, walCutoff); err != nil {
+		if err := db.flushImmutable(entry.mem, entry.walCutoff); err != nil {
 			db.setBackgroundErr("flush", err)
 			log.Printf("pebbledb: flush error: %v (retrying)", err)
 			time.Sleep(flushRetryDelay)
-			select {
-			case db.flushCh <- struct{}{}:
-			default:
-			}
-			continue
+			db.notifyFlush()
+			return
 		}
 
 		db.mu.Lock()
-		db.immutable = nil
-		db.walFreezeOffset = 0
+		if len(db.pendingFlush) > 0 {
+			db.pendingFlush = db.pendingFlush[1:]
+		}
 		db.mu.Unlock()
 		db.clearBackgroundErr()
 	}
-	close(db.flushDone)
+}
+
+func (db *DB) notifyFlush() {
+	select {
+	case db.flushCh <- struct{}{}:
+	default:
+		go func() { db.flushCh <- struct{}{} }()
+	}
 }
 
 func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
@@ -87,7 +100,22 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 		return err
 	}
 
+	if err := writeWalFlushState(db.dir, walFlushState{
+		FreezeOffset: walCutoff,
+		SSTID:        id,
+	}); err != nil {
+		r.Close()
+		os.Remove(path)
+		return err
+	}
+
 	if err := db.wal.TruncateBefore(walCutoff); err != nil {
+		r.Close()
+		os.Remove(path)
+		return err
+	}
+
+	if err := removeWalFlushState(db.dir); err != nil {
 		r.Close()
 		return err
 	}
@@ -100,9 +128,6 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 }
 
 func (db *DB) maybeFlushLocked() (bool, error) {
-	if db.immutable != nil {
-		return false, nil
-	}
 	if db.active.Size() <= db.memtableSize {
 		return false, nil
 	}
@@ -110,8 +135,14 @@ func (db *DB) maybeFlushLocked() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	db.walFreezeOffset = offset
-	db.immutable = db.active
+	db.pendingFlush = append(db.pendingFlush, flushQueueEntry{
+		mem:       db.active,
+		walCutoff: offset,
+	})
 	db.active = memtable.NewSkipList()
 	return true, nil
+}
+
+func (db *DB) hasPendingFlush() bool {
+	return len(db.pendingFlush) > 0
 }

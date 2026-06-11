@@ -14,9 +14,9 @@ func waitForCompaction(t *testing.T, db *DB, maxSST int) {
 	for time.Now().Before(deadline) {
 		db.mu.RLock()
 		count := len(db.sstables)
-		imm := db.immutable
+		pending := db.hasPendingFlush()
 		db.mu.RUnlock()
-		if imm == nil && count <= maxSST {
+		if !pending && count <= maxSST {
 			time.Sleep(50 * time.Millisecond)
 			return
 		}

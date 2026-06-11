@@ -95,90 +95,142 @@ func Replay(path string, fn func(Record) error) error {
 }
 
 // ReplayWithLimits replays a WAL file with size bounds to prevent OOM on corrupt data.
+// A trailing partial record (crash mid-write) is truncated and ignored.
 func ReplayWithLimits(path string, limits ReplayLimits, fn func(Record) error) error {
+	_, err := ReplayFromWithRecovery(path, limits, 0, fn)
+	return err
+}
+
+// ReplayFromWithRecovery replays WAL records starting at startOffset.
+// If the file ends with an incomplete record, the file is truncated to the last
+// valid byte and replay succeeds.
+func ReplayFromWithRecovery(path string, limits ReplayLimits, startOffset int64, fn func(Record) error) (int64, error) {
 	limits = limits.WithDefaults()
 
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDWR, 0644)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return 0, nil
 		}
-		return err
+		return 0, err
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if fi.Size() > limits.MaxFileSize {
-		return ErrWALTooLarge
+		return 0, ErrWALTooLarge
+	}
+	if startOffset > fi.Size() {
+		startOffset = fi.Size()
+	}
+	if _, err := f.Seek(startOffset, io.SeekStart); err != nil {
+		return 0, err
 	}
 
+	validEnd := startOffset
 	for {
-		var keyLen uint32
-		err := binary.Read(f, binary.BigEndian, &keyLen)
+		recordStart, err := f.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return validEnd, err
+		}
+
+		rec, n, err := readOneRecord(f, limits)
 		if err == io.EOF {
 			break
 		}
+		if err == io.ErrUnexpectedEOF {
+			if truncErr := f.Truncate(validEnd); truncErr != nil {
+				return validEnd, truncErr
+			}
+			break
+		}
 		if err != nil {
-			return err
+			return validEnd, err
 		}
-		if keyLen > limits.MaxKeySize {
-			return ErrKeyTooLarge
-		}
-
-		key := make([]byte, keyLen)
-		if _, err := io.ReadFull(f, key); err != nil {
-			return err
-		}
-
-		var valueLen uint32
-		if err := binary.Read(f, binary.BigEndian, &valueLen); err != nil {
-			return err
-		}
-		if valueLen > limits.MaxValueSize {
-			return ErrValueTooLarge
-		}
-		if err := limits.validateRecord(keyLen, valueLen); err != nil {
-			return err
-		}
-
-		value := make([]byte, valueLen)
-		if _, err := io.ReadFull(f, value); err != nil {
-			return err
-		}
-
-		var tombByte byte
-		if err := binary.Read(f, binary.BigEndian, &tombByte); err != nil {
-			return err
-		}
-
-		var checksum uint32
-		if err := binary.Read(f, binary.BigEndian, &checksum); err != nil {
-			return err
-		}
-
-		buf := make([]byte, 0, 4+int(keyLen)+4+int(valueLen)+1)
-		buf = binary.BigEndian.AppendUint32(buf, keyLen)
-		buf = append(buf, key...)
-		buf = binary.BigEndian.AppendUint32(buf, valueLen)
-		buf = append(buf, value...)
-		buf = append(buf, tombByte)
-		if crc32.ChecksumIEEE(buf) != checksum {
-			return io.ErrUnexpectedEOF
-		}
-
-		rec := Record{
-			Key:       key,
-			Value:     value,
-			Tombstone: tombByte == 1,
-		}
+		validEnd = recordStart + n
 		if err := fn(rec); err != nil {
-			return err
+			return validEnd, err
 		}
 	}
-	return nil
+	return validEnd, nil
+}
+
+func readOneRecord(f *os.File, limits ReplayLimits) (Record, int64, error) {
+	start, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return Record{}, 0, err
+	}
+
+	var keyLen uint32
+	if err := binary.Read(f, binary.BigEndian, &keyLen); err != nil {
+		return Record{}, 0, err
+	}
+	if keyLen > limits.MaxKeySize {
+		return Record{}, 0, ErrKeyTooLarge
+	}
+
+	key := make([]byte, keyLen)
+	if _, err := io.ReadFull(f, key); err != nil {
+		return Record{}, 0, mapRecordEOF(err, start)
+	}
+
+	var valueLen uint32
+	if err := binary.Read(f, binary.BigEndian, &valueLen); err != nil {
+		return Record{}, 0, mapRecordEOF(err, start)
+	}
+	if valueLen > limits.MaxValueSize {
+		return Record{}, 0, ErrValueTooLarge
+	}
+	if err := limits.validateRecord(keyLen, valueLen); err != nil {
+		return Record{}, 0, err
+	}
+
+	value := make([]byte, valueLen)
+	if _, err := io.ReadFull(f, value); err != nil {
+		return Record{}, 0, mapRecordEOF(err, start)
+	}
+
+	var tombByte byte
+	if err := binary.Read(f, binary.BigEndian, &tombByte); err != nil {
+		return Record{}, 0, mapRecordEOF(err, start)
+	}
+
+	var checksum uint32
+	if err := binary.Read(f, binary.BigEndian, &checksum); err != nil {
+		return Record{}, 0, mapRecordEOF(err, start)
+	}
+
+	end, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return Record{}, 0, err
+	}
+
+	buf := make([]byte, 0, 4+int(keyLen)+4+int(valueLen)+1)
+	buf = binary.BigEndian.AppendUint32(buf, keyLen)
+	buf = append(buf, key...)
+	buf = binary.BigEndian.AppendUint32(buf, valueLen)
+	buf = append(buf, value...)
+	buf = append(buf, tombByte)
+	if crc32.ChecksumIEEE(buf) != checksum {
+		return Record{}, 0, io.ErrUnexpectedEOF
+	}
+
+	return Record{
+		Key:       key,
+		Value:     value,
+		Tombstone: tombByte == 1,
+	}, end - start, nil
+}
+
+func mapRecordEOF(err error, recordStart int64) error {
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return io.ErrUnexpectedEOF
+	}
+	_ = recordStart
+	return err
 }
 
 // Offset returns the current write position in the WAL file.

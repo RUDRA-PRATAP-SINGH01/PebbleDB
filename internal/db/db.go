@@ -27,9 +27,9 @@ var sstFilePattern = regexp.MustCompile(`^sst_(\d{8})\.sst$`)
 type DB struct {
 	mu                  sync.RWMutex
 	dir                 string
-	active              *memtable.SkipList
-	immutable           *memtable.SkipList
-	sstables            []*sstable.Reader
+	active       *memtable.SkipList
+	pendingFlush []flushQueueEntry
+	sstables     []*sstable.Reader
 	wal                 *wal.WAL
 	manifest            *manifest.Log
 	closed              bool
@@ -41,9 +41,13 @@ type DB struct {
 	nextSSTID        uint64
 	memtableSize     int64
 	compactThreshold int
-	walLimits           wal.ReplayLimits
-	walFreezeOffset     int64
-	bgErr               atomic.Pointer[BackgroundError]
+	walLimits wal.ReplayLimits
+	bgErr     atomic.Pointer[BackgroundError]
+}
+
+type flushQueueEntry struct {
+	mem       *memtable.SkipList
+	walCutoff int64
 }
 
 // Options control database behaviour.
@@ -100,15 +104,19 @@ func Open(opts Options) (*DB, error) {
 		return nil, err
 	}
 
-	walPath := filepath.Join(opts.Dir, "wal.log")
-	w, err := wal.OpenWithLimits(walPath, walLimits)
-	if err != nil {
+	if err := db.loadSSTables(); err != nil {
 		db.manifest.Close()
 		return nil, err
 	}
-	db.wal = w
 
-	err = wal.ReplayWithLimits(walPath, walLimits, func(rec wal.Record) error {
+	walPath := filepath.Join(opts.Dir, "wal.log")
+	replayStart, err := db.walReplayStartOffset()
+	if err != nil {
+		db.closeLoadedReaders()
+		db.manifest.Close()
+		return nil, err
+	}
+	_, err = wal.ReplayFromWithRecovery(walPath, walLimits, replayStart, func(rec wal.Record) error {
 		if rec.Tombstone {
 			db.active.Delete(rec.Key)
 		} else {
@@ -117,16 +125,18 @@ func Open(opts Options) (*DB, error) {
 		return nil
 	})
 	if err != nil {
-		db.wal.Close()
+		db.closeLoadedReaders()
 		db.manifest.Close()
 		return nil, err
 	}
 
-	if err := db.loadSSTables(); err != nil {
-		db.wal.Close()
+	w, err := wal.OpenWithLimits(walPath, walLimits)
+	if err != nil {
+		db.closeLoadedReaders()
 		db.manifest.Close()
 		return nil, err
 	}
+	db.wal = w
 
 	go db.flusher()
 	go db.compactor()
@@ -160,6 +170,13 @@ func discoverSSTIDs(dir string) ([]uint64, error) {
 
 func sstFilePath(dir string, id uint64) string {
 	return filepath.Join(dir, fmt.Sprintf("sst_%08d.sst", id))
+}
+
+func (db *DB) closeLoadedReaders() {
+	for _, r := range db.sstables {
+		r.Close()
+	}
+	db.sstables = nil
 }
 
 func (db *DB) loadSSTables() error {

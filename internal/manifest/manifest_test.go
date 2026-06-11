@@ -80,3 +80,38 @@ func TestCurrentFileWritten(t *testing.T) {
 		t.Fatalf("CURRENT = %q, want %q\n", data, manifestName+"\n")
 	}
 }
+
+func TestManifestSalvagesTrailingPartialRecord(t *testing.T) {
+	dir := t.TempDir()
+	m, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AppendNewFile(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(dir, manifestName)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{0, 0, 0, 2, 0xAA, 0xBB}); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	m2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open after partial tail: %v", err)
+	}
+	defer m2.Close()
+
+	ids := m2.LiveIDs()
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("live ids = %v, want [1]", ids)
+	}
+}

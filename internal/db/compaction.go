@@ -17,11 +17,12 @@ const (
 
 func (db *DB) maybeTriggerCompaction() {
 	db.mu.RLock()
+	closed := db.closed
 	threshold := db.compactThreshold
 	count := len(db.sstables)
 	db.mu.RUnlock()
 
-	if threshold <= 0 || count < threshold {
+	if closed || threshold <= 0 || count < threshold {
 		return
 	}
 	select {
