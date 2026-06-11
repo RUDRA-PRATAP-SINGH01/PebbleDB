@@ -6,15 +6,21 @@ import (
 	"io"
 	"os"
 	"sort"
+	"sync"
+	"sync/atomic"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/bloom"
 )
 
 type Reader struct {
-	file   *os.File
-	footer Footer
-	index  []IndexEntry
-	bloom  *bloom.Filter
+	file         *os.File
+	footer       Footer
+	index        []IndexEntry
+	bloom        *bloom.Filter
+	refs         atomic.Int32
+	closePending atomic.Bool
+	fileClosed   atomic.Bool
+	closeMu      sync.Mutex
 }
 
 func OpenReader(path string) (*Reader, error) {
@@ -148,6 +154,49 @@ func (r *Reader) Get(key []byte) (value []byte, found bool, tombstone bool, err 
 	return nil, false, false, nil
 }
 
+// Ref increments the number of in-flight readers of this SSTable.
+func (r *Reader) Ref() {
+	r.refs.Add(1)
+}
+
+// Unref decrements in-flight readers and closes the file when pending.
+func (r *Reader) Unref() {
+	if r.refs.Add(-1) == 0 && r.closePending.Load() {
+		r.closeFile()
+	}
+}
+
+// Close marks the reader closed; the file is closed once all refs are released.
 func (r *Reader) Close() error {
-	return r.file.Close()
+	r.closePending.Store(true)
+	if r.refs.Load() == 0 {
+		return r.closeFile()
+	}
+	return nil
+}
+
+func (r *Reader) closeFile() error {
+	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
+	if r.fileClosed.Load() || r.file == nil {
+		return nil
+	}
+	err := r.file.Close()
+	r.file = nil
+	r.fileClosed.Store(true)
+	return err
+}
+
+// EntryCount returns the number of entries in the SSTable.
+func (r *Reader) EntryCount() (uint, error) {
+	it := r.NewIterator()
+	var n uint
+	for it.Valid() {
+		n++
+		it.Next()
+		if err := it.Err(); err != nil {
+			return 0, err
+		}
+	}
+	return n, nil
 }

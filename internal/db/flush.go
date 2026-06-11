@@ -41,7 +41,6 @@ func (db *DB) flusher() {
 		db.walFreezeOffset = 0
 		db.mu.Unlock()
 		db.clearBackgroundErr()
-		db.maybeCompact()
 	}
 	close(db.flushDone)
 }
@@ -96,6 +95,7 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 	db.mu.Lock()
 	db.sstables = append(db.sstables, r)
 	db.mu.Unlock()
+	db.maybeTriggerCompaction()
 	return nil
 }
 

@@ -48,6 +48,9 @@ func (db *DB) Close() error {
 	close(db.flushCh)
 	<-db.flushDone
 
+	close(db.compactCh)
+	<-db.compactDone
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	for _, r := range db.sstables {

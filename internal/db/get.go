@@ -39,7 +39,15 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	}
 
 	readers := append([]*sstable.Reader(nil), db.sstables...)
+	for _, r := range readers {
+		r.Ref()
+	}
 	db.mu.RUnlock()
+	defer func() {
+		for _, r := range readers {
+			r.Unref()
+		}
+	}()
 
 	for i := len(readers) - 1; i >= 0; i-- {
 		if !readers[i].MayContain(key) {

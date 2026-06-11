@@ -98,6 +98,15 @@ func (r *Reader) Path() string {
 // MergeReaders writes the union of readers to w. Readers must be ordered oldest
 // to newest; newer tables win on duplicate keys and tombstones are dropped.
 func MergeReaders(readers []*Reader, w *Writer) error {
+	return mergeReaders(readers, w, false)
+}
+
+// MergeReadersKeepTombstones merges readers and preserves tombstone entries.
+func MergeReadersKeepTombstones(readers []*Reader, w *Writer) error {
+	return mergeReaders(readers, w, true)
+}
+
+func mergeReaders(readers []*Reader, w *Writer, keepTombstones bool) error {
 	if len(readers) == 0 {
 		return nil
 	}
@@ -114,8 +123,8 @@ func MergeReaders(readers []*Reader, w *Writer) error {
 		}
 
 		winner := iters[at[len(at)-1]]
-		if !winner.tombstone {
-			if err := w.Add(winner.key, winner.value, false); err != nil {
+		if keepTombstones || !winner.tombstone {
+			if err := w.Add(winner.key, winner.value, winner.tombstone); err != nil {
 				return err
 			}
 		}

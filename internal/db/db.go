@@ -33,11 +33,14 @@ type DB struct {
 	wal                 *wal.WAL
 	manifest            *manifest.Log
 	closed              bool
-	flushCh             chan struct{}
-	flushDone           chan struct{}
-	nextSSTID           uint64
-	memtableSize        int64
-	compactionThreshold int
+	flushCh          chan struct{}
+	flushDone        chan struct{}
+	compactCh        chan struct{}
+	compactDone      chan struct{}
+	compactMu        sync.Mutex
+	nextSSTID        uint64
+	memtableSize     int64
+	compactThreshold int
 	walLimits           wal.ReplayLimits
 	walFreezeOffset     int64
 	bgErr               atomic.Pointer[BackgroundError]
@@ -62,9 +65,9 @@ func Open(opts Options) (*DB, error) {
 		memtableSize = defaultMemtableSize
 	}
 
-	compactionThreshold := opts.CompactionThreshold
-	if compactionThreshold == 0 {
-		compactionThreshold = defaultCompactionThreshold
+	compactThreshold := opts.CompactionThreshold
+	if compactThreshold == 0 {
+		compactThreshold = defaultCompactThreshold
 	}
 
 	walLimits := opts.WALReplayLimits.WithDefaults()
@@ -73,10 +76,12 @@ func Open(opts Options) (*DB, error) {
 		dir:                 opts.Dir,
 		active:              memtable.NewSkipList(),
 		memtableSize:        memtableSize,
-		compactionThreshold: compactionThreshold,
-		walLimits:           walLimits,
-		flushCh:             make(chan struct{}, 8),
-		flushDone:           make(chan struct{}),
+		compactThreshold: compactThreshold,
+		walLimits:        walLimits,
+		flushCh:          make(chan struct{}, 8),
+		flushDone:        make(chan struct{}),
+		compactCh:        make(chan struct{}, 8),
+		compactDone:      make(chan struct{}),
 	}
 
 	m, err := manifest.Open(opts.Dir)
@@ -124,6 +129,8 @@ func Open(opts Options) (*DB, error) {
 	}
 
 	go db.flusher()
+	go db.compactor()
+	db.maybeTriggerCompaction()
 	return db, nil
 }
 

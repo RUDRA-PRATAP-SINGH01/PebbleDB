@@ -108,6 +108,46 @@ func TestCompactionDropsDeletedKeys(t *testing.T) {
 	}
 }
 
+func TestPartialCompactionReducesCount(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(Options{
+		Dir:                 dir,
+		MemtableSize:        8,
+		CompactionThreshold: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for round := 0; round < 4; round++ {
+		for i := 0; i < 4; i++ {
+			key := fmt.Sprintf("r%d-k%d", round, i)
+			if err := db.Put([]byte(key), []byte("v")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		waitForFlush(t, db)
+	}
+
+	waitForCompaction(t, db, 3)
+
+	db.mu.RLock()
+	count := len(db.sstables)
+	db.mu.RUnlock()
+	if count != 3 {
+		t.Errorf("after one partial compaction want 3 SSTables, got %d", count)
+	}
+
+	val, err := db.Get([]byte("r3-k0"))
+	if err != nil {
+		t.Fatalf("key missing after partial compaction: %v", err)
+	}
+	if string(val) != "v" {
+		t.Errorf("got %q, want v", val)
+	}
+}
+
 func TestBackgroundErrorSurfacesToCaller(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(Options{Dir: dir})
