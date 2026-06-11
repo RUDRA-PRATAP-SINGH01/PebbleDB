@@ -167,6 +167,13 @@ func mergeReaders(readers []*Reader, w *Writer, keepTombstones bool) error {
 	for i, r := range readers {
 		iters[i] = r.NewIterator()
 	}
+	defer func() {
+		for _, it := range iters {
+			if it != nil {
+				it.Close()
+			}
+		}
+	}()
 
 	for {
 		minKey, at := minKeyAcross(iters)

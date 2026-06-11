@@ -38,6 +38,9 @@ func New(expectedEntries uint, falsePositiveRate float64) *Filter {
 
 // Add inserts a key into the Bloom filter.
 func (f *Filter) Add(key []byte) {
+	if f == nil || f.m == 0 {
+		return
+	}
 	h := fnv.New64a()
 	h.Write(key)
 	sum := h.Sum64()
@@ -52,6 +55,9 @@ func (f *Filter) Add(key []byte) {
 
 // MayContain returns true if the key might be in the set (false positive possible).
 func (f *Filter) MayContain(key []byte) bool {
+	if f == nil || f.m == 0 {
+		return true
+	}
 	h := fnv.New64a()
 	h.Write(key)
 	sum := h.Sum64()
@@ -82,6 +88,9 @@ func Decode(data []byte) *Filter {
 	}
 	k := uint(binary.BigEndian.Uint32(data[0:4]))
 	m := uint(binary.BigEndian.Uint32(data[4:8]))
+	if m == 0 || k == 0 {
+		return nil
+	}
 	bits := data[8:]
 	expectedLen := (m + 7) / 8
 	if uint(len(bits)) < expectedLen {

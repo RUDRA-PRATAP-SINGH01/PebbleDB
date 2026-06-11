@@ -14,19 +14,22 @@ func (db *DB) compactor() {
 	defer close(db.compactDone)
 	for range db.compactCh {
 		db.compactMu.Lock()
-
-		if err := db.doCompaction(); err != nil {
-			db.setBackgroundErr("compaction", err)
-			log.Printf("pebbledb: compaction error: %v (retrying)", err)
-			time.Sleep(compactRetryDelay)
-			select {
-			case db.compactCh <- struct{}{}:
-			default:
+		for {
+			if err := db.doCompaction(); err != nil {
+				db.setBackgroundErr("compaction", err)
+				log.Printf("pebbledb: compaction error: %v (retrying)", err)
+				time.Sleep(compactRetryDelay)
+				break
 			}
-		} else {
-			db.clearBackgroundErr()
-		}
+			db.clearBackgroundErrOp("compaction")
 
+			db.mu.RLock()
+			more := len(db.sstables) >= db.compactThreshold
+			db.mu.RUnlock()
+			if !more {
+				break
+			}
+		}
 		db.compactMu.Unlock()
 	}
 }
@@ -37,6 +40,11 @@ func (db *DB) doCompaction() error {
 	if len(toCompact) < 2 {
 		db.mu.Unlock()
 		return nil
+	}
+	oldLiveIDs, err := liveIDsFromReaders(db.sstables)
+	if err != nil {
+		db.mu.Unlock()
+		return err
 	}
 	compReaders := make([]*sstable.Reader, len(toCompact))
 	copy(compReaders, toCompact)
@@ -49,11 +57,6 @@ func (db *DB) doCompaction() error {
 	newReader, _, err := db.mergeSSTables(compReaders)
 	if err != nil {
 		return err
-	}
-
-	oldPaths := make([]string, len(compReaders))
-	for i, r := range compReaders {
-		oldPaths[i] = r.Path()
 	}
 
 	db.mu.Lock()
@@ -75,9 +78,8 @@ func (db *DB) doCompaction() error {
 		}
 	}
 	newList = append(newList, newReader)
-	db.sstables = newList
 
-	liveIDs, err := liveIDsFromReaders(db.sstables)
+	liveIDs, err := liveIDsFromReaders(newList)
 	if err != nil {
 		db.mu.Unlock()
 		newReader.Close()
@@ -92,15 +94,39 @@ func (db *DB) doCompaction() error {
 		return err
 	}
 
+	oldPaths := make([]string, len(compReaders))
+	for i, r := range compReaders {
+		oldPaths[i] = r.Path()
+	}
+
+	db.mu.Lock()
+	if !readersStillPresent(db.sstables, compReaders) {
+		db.mu.Unlock()
+		if rbErr := db.manifest.AppendSetFileSet(oldLiveIDs); rbErr != nil {
+			log.Printf("pebbledb: compaction manifest rollback failed: %v", rbErr)
+		}
+		newReader.Close()
+		os.Remove(newReader.Path())
+		return nil
+	}
+
+	db.sstables = newList
+	db.mu.Unlock()
+
+	db.trackReader(newReader)
+
 	for _, r := range compReaders {
-		r.Close()
+		if err := r.Discard(); err != nil {
+			log.Printf("pebbledb: discard compacted SST: %v", err)
+		}
 	}
 	for _, p := range oldPaths {
 		if p != "" {
-			os.Remove(p)
+			if err := removeSSTPath(p); err != nil {
+				log.Printf("pebbledb: remove compacted SST %s: %v", p, err)
+			}
 		}
 	}
 
-	db.maybeTriggerCompaction()
 	return nil
 }

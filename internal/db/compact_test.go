@@ -3,7 +3,6 @@ package db
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -60,13 +59,15 @@ func TestCompactionMergesDuplicateKeys(t *testing.T) {
 		t.Errorf("shared = %q, want v2", val)
 	}
 
-	matches, err := filepath.Glob(filepath.Join(dir, "sst_*.sst"))
-	if err != nil {
-		t.Fatal(err)
+	live := db.manifest.LiveIDs()
+	if len(live) != 1 {
+		t.Fatalf("expected 1 live SSTable in manifest, got %v", live)
 	}
-	if len(matches) != 1 {
-		t.Errorf("expected 1 SSTable after compaction, got %d: %v", len(matches), matches)
+	db.mu.RLock()
+	if len(db.sstables) != 1 {
+		t.Fatalf("expected 1 in-memory SSTable, got %d", len(db.sstables))
 	}
+	db.mu.RUnlock()
 }
 
 func TestCompactionDropsDeletedKeys(t *testing.T) {

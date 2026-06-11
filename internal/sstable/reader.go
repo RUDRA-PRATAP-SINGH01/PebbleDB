@@ -175,6 +175,13 @@ func (r *Reader) Close() error {
 	return nil
 }
 
+// Discard closes the backing file immediately so the path can be deleted.
+// Only call after the reader is removed from the live SSTable set.
+func (r *Reader) Discard() error {
+	r.closePending.Store(true)
+	return r.closeFile()
+}
+
 func (r *Reader) closeFile() error {
 	r.closeMu.Lock()
 	defer r.closeMu.Unlock()
@@ -190,6 +197,7 @@ func (r *Reader) closeFile() error {
 // EntryCount returns the number of entries in the SSTable.
 func (r *Reader) EntryCount() (uint, error) {
 	it := r.NewIterator()
+	defer it.Close()
 	var n uint
 	for it.Valid() {
 		n++

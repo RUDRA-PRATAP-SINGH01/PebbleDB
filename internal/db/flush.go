@@ -36,6 +36,14 @@ func (db *DB) drainPendingFlush() {
 		if err := db.flushImmutable(entry.mem, entry.walCutoff); err != nil {
 			db.setBackgroundErr("flush", err)
 			log.Printf("pebbledb: flush error: %v (retrying)", err)
+
+			db.mu.RLock()
+			closed := db.closed
+			db.mu.RUnlock()
+			if closed {
+				return
+			}
+
 			time.Sleep(flushRetryDelay)
 			db.notifyFlush()
 			return
@@ -46,16 +54,29 @@ func (db *DB) drainPendingFlush() {
 			db.pendingFlush = db.pendingFlush[1:]
 		}
 		db.mu.Unlock()
-		db.clearBackgroundErr()
+		db.clearBackgroundErrOp("flush")
 	}
 }
 
 func (db *DB) notifyFlush() {
-	select {
-	case db.flushCh <- struct{}{}:
-	default:
-		go func() { db.flushCh <- struct{}{} }()
+	db.signalFlush(false)
+}
+
+// notifyFlushForce wakes the flusher during Close after db.closed is set.
+func (db *DB) notifyFlushForce() {
+	db.signalFlush(true)
+}
+
+func (db *DB) signalFlush(force bool) {
+	if !force {
+		db.mu.RLock()
+		closed := db.closed
+		db.mu.RUnlock()
+		if closed {
+			return
+		}
 	}
+	db.flushCh <- struct{}{}
 }
 
 func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
@@ -94,37 +115,38 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 		return err
 	}
 
+	// Manifest commit is the durability boundary. After this point the SST must
+	// remain on disk and become visible even if WAL cleanup fails.
 	if err := db.manifest.AppendNewFile(id); err != nil {
 		r.Close()
 		os.Remove(path)
 		return err
 	}
 
-	if err := writeWalFlushState(db.dir, walFlushState{
-		FreezeOffset: walCutoff,
-		SSTID:        id,
-	}); err != nil {
-		r.Close()
-		os.Remove(path)
-		return err
-	}
-
-	if err := db.wal.TruncateBefore(walCutoff); err != nil {
-		r.Close()
-		os.Remove(path)
-		return err
-	}
-
-	if err := removeWalFlushState(db.dir); err != nil {
-		r.Close()
-		return err
-	}
-
 	db.mu.Lock()
 	db.sstables = append(db.sstables, r)
 	db.mu.Unlock()
+	db.trackReader(r)
+
+	if err := db.completeWalAfterFlush(walCutoff, id); err != nil {
+		log.Printf("pebbledb: wal cleanup after flush of sst %d: %v (data is durable; reopen will recover)", id, err)
+	}
+
 	db.maybeTriggerCompaction()
 	return nil
+}
+
+func (db *DB) completeWalAfterFlush(walCutoff int64, sstID uint64) error {
+	if err := writeWalFlushState(db.dir, walFlushState{
+		FreezeOffset: walCutoff,
+		SSTID:        sstID,
+	}); err != nil {
+		return err
+	}
+	if err := db.wal.TruncateBefore(walCutoff); err != nil {
+		return err
+	}
+	return removeWalFlushState(db.dir)
 }
 
 func (db *DB) maybeFlushLocked() (bool, error) {

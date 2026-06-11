@@ -1,10 +1,14 @@
 package db
 
 import (
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
 )
+
+var closeFlushDrainTimeout = 30 * time.Second
 
 // Close flushes pending data and closes the database.
 func (db *DB) Close() error {
@@ -15,6 +19,8 @@ func (db *DB) Close() error {
 	}
 	db.closed = true
 	db.mu.Unlock()
+
+	var closeErr error
 
 	for {
 		var needFlush bool
@@ -39,9 +45,12 @@ func (db *DB) Close() error {
 		db.mu.Unlock()
 
 		if needFlush {
-			db.notifyFlush()
+			db.notifyFlushForce()
 		}
-		db.waitForPendingFlushDrain()
+		if err := db.waitForPendingFlushDrain(closeFlushDrainTimeout); err != nil {
+			closeErr = errors.Join(closeErr, err)
+			break
+		}
 	}
 
 	close(db.flushCh)
@@ -54,10 +63,8 @@ func (db *DB) Close() error {
 
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	for _, r := range db.sstables {
-		r.Close()
-	}
 	db.sstables = nil
+	db.discardAllReaders()
 	if db.wal != nil {
 		db.wal.Sync()
 		db.wal.Close()
@@ -67,17 +74,23 @@ func (db *DB) Close() error {
 		db.manifest.Close()
 		db.manifest = nil
 	}
-	return nil
+	return closeErr
 }
 
-func (db *DB) waitForPendingFlushDrain() {
-	for {
+func (db *DB) waitForPendingFlushDrain(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
 		db.mu.RLock()
 		pending := db.hasPendingFlush()
 		db.mu.RUnlock()
 		if !pending {
-			return
+			return nil
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+
+	if bg := db.BackgroundError(); bg != nil {
+		return fmt.Errorf("%w: %v", ErrCloseFlushTimeout, bg)
+	}
+	return ErrCloseFlushTimeout
 }

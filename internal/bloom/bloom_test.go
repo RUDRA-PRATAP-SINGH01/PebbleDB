@@ -42,3 +42,15 @@ func TestBloomDecodeTooShort(t *testing.T) {
 		t.Error("expected nil for short data")
 	}
 }
+
+func TestBloomDecodeRejectsZeroSize(t *testing.T) {
+	buf := []byte{0, 0, 0, 1, 0, 0, 0, 0, 0xFF}
+	if Decode(buf) != nil {
+		t.Fatal("expected nil for m=0 bloom footer")
+	}
+}
+
+func TestBloomMayContainZeroSizeDoesNotPanic(t *testing.T) {
+	f := &Filter{k: 1, m: 0, bits: []byte{}}
+	f.MayContain([]byte("key"))
+}

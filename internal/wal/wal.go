@@ -2,11 +2,15 @@ package wal
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
 	"sync"
 )
+
+var ErrTruncateIncomplete = errors.New("wal: truncate copy incomplete")
 
 // Record represents a single entry in the WAL.
 type Record struct {
@@ -305,7 +309,9 @@ func (w *WAL) TruncateBefore(truncateAt int64) error {
 			return err
 		}
 		if n == 0 {
-			break
+			tmp.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("%w: read 0 bytes at offset %d", ErrTruncateIncomplete, truncateAt+copied)
 		}
 		if _, err := tmp.Write(buf[:n]); err != nil {
 			tmp.Close()
@@ -313,6 +319,12 @@ func (w *WAL) TruncateBefore(truncateAt int64) error {
 			return err
 		}
 		copied += int64(n)
+	}
+
+	if copied != remaining {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("%w: copied %d of %d bytes", ErrTruncateIncomplete, copied, remaining)
 	}
 
 	if err := tmp.Sync(); err != nil {

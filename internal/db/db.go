@@ -38,6 +38,8 @@ type DB struct {
 	compactCh        chan struct{}
 	compactDone      chan struct{}
 	compactMu        sync.Mutex
+	readersMu        sync.Mutex
+	allReaders       []*sstable.Reader
 	nextSSTID        uint64
 	memtableSize     int64
 	compactThreshold int
@@ -108,6 +110,7 @@ func Open(opts Options) (*DB, error) {
 		db.manifest.Close()
 		return nil, err
 	}
+	db.removeOrphanSSTFiles()
 
 	walPath := filepath.Join(opts.Dir, "wal.log")
 	replayStart, err := db.walReplayStartOffset()
@@ -187,6 +190,7 @@ func (db *DB) loadSSTables() error {
 			return err
 		}
 		db.sstables = append(db.sstables, r)
+		db.trackReader(r)
 		if id > db.nextSSTID {
 			db.nextSSTID = id
 		}
@@ -201,8 +205,28 @@ func (db *DB) setBackgroundErr(op string, err error) {
 	db.bgErr.Store(&BackgroundError{Op: op, Err: err})
 }
 
-func (db *DB) clearBackgroundErr() {
-	db.bgErr.Store(nil)
+func (db *DB) clearBackgroundErrOp(op string) {
+	if p := db.bgErr.Load(); p != nil && p.Op == op {
+		db.bgErr.Store(nil)
+	}
+}
+
+func (db *DB) trackReader(r *sstable.Reader) {
+	if r == nil {
+		return
+	}
+	db.readersMu.Lock()
+	db.allReaders = append(db.allReaders, r)
+	db.readersMu.Unlock()
+}
+
+func (db *DB) discardAllReaders() {
+	db.readersMu.Lock()
+	for _, r := range db.allReaders {
+		_ = r.Discard()
+	}
+	db.allReaders = nil
+	db.readersMu.Unlock()
 }
 
 func (db *DB) backgroundErr() error {
