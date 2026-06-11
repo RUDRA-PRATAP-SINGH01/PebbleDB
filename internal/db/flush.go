@@ -2,13 +2,17 @@ package db
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/sstable"
 )
+
+const flushRetryDelay = 100 * time.Millisecond
 
 func (db *DB) flusher() {
 	for range db.flushCh {
@@ -19,19 +23,23 @@ func (db *DB) flusher() {
 		}
 		imm := db.immutable
 		walCutoff := db.walFreezeOffset
-		db.immutable = nil
-		db.walFreezeOffset = 0
 		db.mu.Unlock()
 
 		if err := db.flushImmutable(imm, walCutoff); err != nil {
 			db.setBackgroundErr("flush", err)
-			db.restoreFailedFlush(imm, walCutoff)
+			log.Printf("pebbledb: flush error: %v (retrying)", err)
+			time.Sleep(flushRetryDelay)
 			select {
 			case db.flushCh <- struct{}{}:
 			default:
 			}
 			continue
 		}
+
+		db.mu.Lock()
+		db.immutable = nil
+		db.walFreezeOffset = 0
+		db.mu.Unlock()
 		db.clearBackgroundErr()
 		db.maybeCompact()
 	}
@@ -46,7 +54,7 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 	if expectedEntries < 1 {
 		expectedEntries = 1
 	}
-	w, err := sstable.NewWriterWithBloom(path, defaultBlockSize, expectedEntries)
+	w, err := sstable.NewWriter(path, defaultBlockSize, expectedEntries)
 	if err != nil {
 		return err
 	}
@@ -74,9 +82,14 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 		return err
 	}
 
-	if err := db.wal.TruncateBefore(walCutoff); err != nil {
+	if err := db.manifest.AppendNewFile(id); err != nil {
 		r.Close()
 		os.Remove(path)
+		return err
+	}
+
+	if err := db.wal.TruncateBefore(walCutoff); err != nil {
+		r.Close()
 		return err
 	}
 
@@ -86,33 +99,11 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 	return nil
 }
 
-func (db *DB) restoreFailedFlush(imm *memtable.SkipList, walCutoff int64) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	if db.immutable == nil {
-		db.immutable = imm
-		db.walFreezeOffset = walCutoff
-		return
-	}
-
-	it := imm.Iterator()
-	for it.Valid() {
-		if it.IsTombstone() {
-			db.immutable.Delete(it.Key())
-		} else {
-			db.immutable.Put(it.Key(), it.Value())
-		}
-		it.Next()
-	}
-	it.Close()
-}
-
 func (db *DB) maybeFlushLocked() (bool, error) {
 	if db.immutable != nil {
 		return false, nil
 	}
-	if db.active.Size() <= db.memtableThreshold {
+	if db.active.Size() <= db.memtableSize {
 		return false, nil
 	}
 	offset, err := db.wal.Size()

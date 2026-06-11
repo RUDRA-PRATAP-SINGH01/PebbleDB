@@ -7,8 +7,6 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/bloom"
 )
 
-const defaultBloomExpectedEntries = 1024
-
 type Writer struct {
 	file      *os.File
 	tmpPath   string
@@ -21,12 +19,7 @@ type Writer struct {
 	offset    uint64
 }
 
-func NewWriter(path string, blockSize int) (*Writer, error) {
-	return NewWriterWithBloom(path, blockSize, defaultBloomExpectedEntries)
-}
-
-// NewWriterWithBloom creates a writer with a bloom filter sized for expectedEntries.
-func NewWriterWithBloom(path string, blockSize int, expectedEntries uint) (*Writer, error) {
+func NewWriter(path string, blockSize int, expectedEntries uint) (*Writer, error) {
 	if blockSize <= 0 {
 		return nil, ErrInvalidBlockSize
 	}

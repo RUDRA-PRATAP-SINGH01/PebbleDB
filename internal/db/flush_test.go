@@ -38,9 +38,18 @@ func waitForFlush(t *testing.T, db *DB) {
 		imm != nil, sstCount, db.BackgroundError())
 }
 
+func TestFlusher(t *testing.T) {
+	testFlushToSSTable(t)
+}
+
 func TestFlushToSSTable(t *testing.T) {
+	testFlushToSSTable(t)
+}
+
+func testFlushToSSTable(t *testing.T) {
+	t.Helper()
 	dir := t.TempDir()
-	db, err := Open(Options{Dir: dir, MemtableSizeThreshold: flushTestThreshold})
+	db, err := Open(Options{Dir: dir, MemtableSize: flushTestThreshold})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +83,7 @@ func TestFlushToSSTable(t *testing.T) {
 
 func TestFlushTombstone(t *testing.T) {
 	dir := t.TempDir()
-	db, err := Open(Options{Dir: dir, MemtableSizeThreshold: flushTestThreshold})
+	db, err := Open(Options{Dir: dir, MemtableSize: flushTestThreshold})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +121,7 @@ func TestFlushTombstone(t *testing.T) {
 
 func TestDeleteShadowsSSTableBeforeFlush(t *testing.T) {
 	dir := t.TempDir()
-	db, err := Open(Options{Dir: dir, MemtableSizeThreshold: flushTestThreshold})
+	db, err := Open(Options{Dir: dir, MemtableSize: flushTestThreshold})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +150,7 @@ func TestDeleteShadowsSSTableBeforeFlush(t *testing.T) {
 func TestWALPreservedAfterFlush(t *testing.T) {
 	dir := t.TempDir()
 	// Threshold 64: first batch triggers flush; single after-flush write stays in active.
-	db, err := Open(Options{Dir: dir, MemtableSizeThreshold: 64})
+	db, err := Open(Options{Dir: dir, MemtableSize: 64})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +192,7 @@ func TestWALPreservedAfterFlush(t *testing.T) {
 func TestReopenLoadsSSTables(t *testing.T) {
 	dir := t.TempDir()
 
-	db1, err := Open(Options{Dir: dir, MemtableSizeThreshold: flushTestThreshold})
+	db1, err := Open(Options{Dir: dir, MemtableSize: flushTestThreshold})
 	if err != nil {
 		t.Fatal(err)
 	}

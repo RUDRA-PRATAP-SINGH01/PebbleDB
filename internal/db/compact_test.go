@@ -29,7 +29,7 @@ func TestCompactionMergesDuplicateKeys(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(Options{
 		Dir:                   dir,
-		MemtableSizeThreshold: 8,
+		MemtableSize: 8,
 		CompactionThreshold:   2,
 	})
 	if err != nil {
@@ -73,7 +73,7 @@ func TestCompactionDropsDeletedKeys(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(Options{
 		Dir:                   dir,
-		MemtableSizeThreshold: 8,
+		MemtableSize: 8,
 		CompactionThreshold:   2,
 	})
 	if err != nil {

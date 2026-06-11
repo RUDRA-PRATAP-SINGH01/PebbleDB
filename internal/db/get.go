@@ -42,6 +42,9 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	db.mu.RUnlock()
 
 	for i := len(readers) - 1; i >= 0; i-- {
+		if !readers[i].MayContain(key) {
+			continue
+		}
 		val, found, tomb, err := readers[i].Get(key)
 		if err != nil {
 			return nil, err

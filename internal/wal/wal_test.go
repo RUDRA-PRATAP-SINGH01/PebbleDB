@@ -48,6 +48,39 @@ func TestWALAppendAndReplay(t *testing.T) {
 	}
 }
 
+func TestWALOffset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	off, err := w.Offset()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off != 0 {
+		t.Fatalf("empty WAL offset = %d, want 0", off)
+	}
+
+	if err := w.Append(Record{Key: []byte("k"), Value: []byte("v")}); err != nil {
+		t.Fatal(err)
+	}
+	off, err = w.Offset()
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, err := w.Size()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(off) != size {
+		t.Fatalf("Offset()=%d Size()=%d, want equal", off, size)
+	}
+}
+
 func TestWALTruncate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.log")
 

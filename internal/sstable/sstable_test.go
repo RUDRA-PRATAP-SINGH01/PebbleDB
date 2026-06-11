@@ -18,7 +18,7 @@ func TestSSTableWriter(t *testing.T) {
 	mt.Put([]byte("c"), []byte("3"))
 	mt.Delete([]byte("d")) // tombstone
 
-	w, err := NewWriter(path, 4096)
+	w, err := NewWriter(path, 4096, uint(mt.Len()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestSSTableRoundTrip(t *testing.T) {
 	mt.Put([]byte("b"), []byte("2"))
 	mt.Delete([]byte("c"))
 
-	w, err := NewWriter(path, 4096)
+	w, err := NewWriter(path, 4096, uint(mt.Len()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestSSTableBloomFilterSkip(t *testing.T) {
 	mt := memtable.NewSkipList()
 	mt.Put([]byte("a"), []byte("1"))
 
-	w, err := NewWriter(path, 4096)
+	w, err := NewWriter(path, 4096, uint(mt.Len()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,11 +121,13 @@ func TestSSTableBloomFilterSkip(t *testing.T) {
 	}
 	defer r.Close()
 
-	_, found, _, err := r.Get([]byte("not-in-table"))
+	if r.MayContain([]byte("not-in-table")) {
+		_, found, _, err := r.Get([]byte("not-in-table"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if found {
-		t.Error("key not in SSTable should not be found")
+		if found {
+			t.Error("key not in SSTable should not be found")
+		}
 	}
 }

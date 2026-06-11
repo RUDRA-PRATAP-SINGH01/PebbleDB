@@ -111,8 +111,17 @@ func decodeIndex(data []byte) ([]IndexEntry, error) {
 	return entries, nil
 }
 
+// MayContain reports whether the key might be in this SSTable.
+// Returns true if no bloom filter is present.
+func (r *Reader) MayContain(key []byte) bool {
+	if r.bloom == nil {
+		return true
+	}
+	return r.bloom.MayContain(key)
+}
+
 func (r *Reader) Get(key []byte) (value []byte, found bool, tombstone bool, err error) {
-	if r.bloom != nil && !r.bloom.MayContain(key) {
+	if !r.MayContain(key) {
 		return nil, false, false, nil
 	}
 	idx := sort.Search(len(r.index), func(i int) bool {

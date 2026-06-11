@@ -181,6 +181,17 @@ func ReplayWithLimits(path string, limits ReplayLimits, fn func(Record) error) e
 	return nil
 }
 
+// Offset returns the current write position in the WAL file.
+func (w *WAL) Offset() (uint64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	off, err := w.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	return uint64(off), nil
+}
+
 // Size returns the current WAL file size in bytes.
 func (w *WAL) Size() (int64, error) {
 	w.mu.Lock()

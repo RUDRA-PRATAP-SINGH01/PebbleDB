@@ -36,7 +36,7 @@ func (db *DB) compactSSTables(inputs []*sstable.Reader) error {
 	path := filepath.Join(db.dir, fmt.Sprintf("sst_%08d.sst", id))
 
 	expectedEntries := uint(1024)
-	w, err := sstable.NewWriterWithBloom(path, defaultBlockSize, expectedEntries)
+	w, err := sstable.NewWriter(path, defaultBlockSize, expectedEntries)
 	if err != nil {
 		return err
 	}
@@ -57,6 +57,12 @@ func (db *DB) compactSSTables(inputs []*sstable.Reader) error {
 		return err
 	}
 
+	if err := db.manifest.AppendSetFileSet([]uint64{id}); err != nil {
+		merged.Close()
+		os.Remove(path)
+		return err
+	}
+
 	oldPaths := make([]string, len(inputs))
 	for i, r := range inputs {
 		oldPaths[i] = r.Path()
@@ -64,11 +70,7 @@ func (db *DB) compactSSTables(inputs []*sstable.Reader) error {
 	}
 
 	db.mu.Lock()
-	if len(inputs) == len(db.sstables) {
-		db.sstables = []*sstable.Reader{merged}
-	} else {
-		db.sstables = append(db.sstables, merged)
-	}
+	db.sstables = []*sstable.Reader{merged}
 	db.mu.Unlock()
 
 	for _, p := range oldPaths {

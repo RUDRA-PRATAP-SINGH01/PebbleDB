@@ -16,7 +16,7 @@ func TestMergeReadersDedupesKeys(t *testing.T) {
 		for _, e := range entries {
 			mt.Put([]byte(e[0]), []byte(e[1]))
 		}
-		w, err := NewWriter(path, 4096)
+		w, err := NewWriter(path, 4096, uint(mt.Len()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -44,7 +44,7 @@ func TestMergeReadersDedupesKeys(t *testing.T) {
 	defer newer.Close()
 
 	outPath := dir + "/merged.sst"
-	w, err := NewWriter(outPath, 4096)
+	w, err := NewWriter(outPath, 4096, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
