@@ -2,26 +2,33 @@ package manifest
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
 
 const (
 	currentFileName = "CURRENT"
-	manifestName    = "MANIFEST-000001"
+	manifestPrefix  = "MANIFEST-"
+	initialManifest = "MANIFEST-000001"
+
+	compactRecordThreshold = 64
+	compactSizeThreshold   = 64 << 10 // 64 KiB
 )
 
 // Log is the append-only manifest tracking the live SSTable set.
 type Log struct {
-	dir     string
-	path    string
-	file    *os.File
-	mu      sync.Mutex
-	liveSet map[uint64]struct{}
+	dir         string
+	path        string
+	file        *os.File
+	mu          sync.Mutex
+	liveSet     map[uint64]struct{}
+	recordCount int
 }
 
 // Open opens or creates the manifest in dir.
@@ -30,11 +37,18 @@ func Open(dir string) (*Log, error) {
 		return nil, err
 	}
 
-	manifestPath := filepath.Join(dir, manifestName)
-	if err := ensureCurrent(dir, manifestName); err != nil {
+	manifestFile, err := readCurrentManifest(dir)
+	if err != nil {
 		return nil, err
 	}
+	if manifestFile == "" {
+		manifestFile = initialManifest
+		if err := writeCurrent(dir, manifestFile); err != nil {
+			return nil, err
+		}
+	}
 
+	manifestPath := filepath.Join(dir, manifestFile)
 	f, err := os.OpenFile(manifestPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, err
@@ -53,19 +67,16 @@ func Open(dir string) (*Log, error) {
 	return l, nil
 }
 
-func ensureCurrent(dir, manifestFile string) error {
+func readCurrentManifest(dir string) (string, error) {
 	currentPath := filepath.Join(dir, currentFileName)
 	data, err := os.ReadFile(currentPath)
-	if err == nil {
-		name := strings.TrimSpace(string(data))
-		if name == manifestFile {
-			return nil
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
 		}
+		return "", err
 	}
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return writeCurrent(dir, manifestFile)
+	return strings.TrimSpace(string(data)), nil
 }
 
 func writeCurrent(dir, manifestFile string) error {
@@ -132,6 +143,7 @@ func (l *Log) replay() error {
 		if err := applyEdit(l.liveSet, payload); err != nil {
 			return err
 		}
+		l.recordCount++
 		validEnd = recordStart + int64(len(record))
 	}
 
@@ -237,7 +249,97 @@ func (l *Log) append(record []byte, apply func()) error {
 		return err
 	}
 	apply()
+	l.recordCount++
 	return nil
+}
+
+// MaybeCompact rewrites the manifest as a single SetFileSet snapshot and rotates
+// to a new manifest file when the log grows too large.
+func (l *Log) MaybeCompact() error {
+	l.mu.Lock()
+	need := l.recordCount >= compactRecordThreshold
+	var size int64
+	if !need {
+		if fi, err := l.file.Stat(); err == nil {
+			size = fi.Size()
+			need = size >= compactSizeThreshold
+		}
+	}
+	if !need {
+		l.mu.Unlock()
+		return nil
+	}
+	ids := make([]uint64, 0, len(l.liveSet))
+	for id := range l.liveSet {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	oldPath := l.path
+	l.mu.Unlock()
+
+	return l.rotateSnapshot(ids, oldPath)
+}
+
+func (l *Log) rotateSnapshot(ids []uint64, oldPath string) error {
+	newName, err := nextManifestName(oldPath)
+	if err != nil {
+		return err
+	}
+	newPath := filepath.Join(l.dir, newName)
+	record := encodeSetFileSet(ids)
+
+	f, err := os.OpenFile(newPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(record); err != nil {
+		f.Close()
+		os.Remove(newPath)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(newPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(newPath)
+		return err
+	}
+	if err := writeCurrent(l.dir, newName); err != nil {
+		os.Remove(newPath)
+		return err
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file != nil {
+		_ = l.file.Close()
+	}
+	opened, err := os.OpenFile(newPath, os.O_RDWR|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	l.file = opened
+	l.path = newPath
+	l.recordCount = 1
+	if oldPath != newPath {
+		_ = os.Remove(oldPath)
+	}
+	return nil
+}
+
+func nextManifestName(current string) (string, error) {
+	base := filepath.Base(current)
+	if !strings.HasPrefix(base, manifestPrefix) {
+		return initialManifest, nil
+	}
+	numStr := strings.TrimPrefix(base, manifestPrefix)
+	n, err := strconv.ParseUint(numStr, 10, 64)
+	if err != nil || n == 0 {
+		return initialManifest, nil
+	}
+	return fmt.Sprintf("%s%06d", manifestPrefix, n+1), nil
 }
 
 // Close closes the manifest file.

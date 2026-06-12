@@ -55,7 +55,7 @@ func TestManifestSetFileSetReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids, err := ReplayFile(filepath.Join(dir, manifestName))
+	ids, err := ReplayFile(filepath.Join(dir, initialManifest))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +76,8 @@ func TestCurrentFileWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != manifestName+"\n" {
-		t.Fatalf("CURRENT = %q, want %q\n", data, manifestName+"\n")
+	if string(data) != initialManifest+"\n" {
+		t.Fatalf("CURRENT = %q, want %q\n", data, initialManifest+"\n")
 	}
 }
 
@@ -94,7 +94,7 @@ func TestManifestSalvagesTrailingPartialRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path := filepath.Join(dir, manifestName)
+	path := filepath.Join(dir, initialManifest)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		t.Fatal(err)
@@ -113,5 +113,51 @@ func TestManifestSalvagesTrailingPartialRecord(t *testing.T) {
 	ids := m2.LiveIDs()
 	if len(ids) != 1 || ids[0] != 1 {
 		t.Fatalf("live ids = %v, want [1]", ids)
+	}
+}
+
+func TestManifestMaybeCompactRotates(t *testing.T) {
+	dir := t.TempDir()
+	m, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := uint64(1); i <= 5; i++ {
+		if err := m.AppendNewFile(i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Force compaction regardless of threshold.
+	m.mu.Lock()
+	m.recordCount = compactRecordThreshold
+	m.mu.Unlock()
+
+	if err := m.MaybeCompact(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := readCurrentManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current != "MANIFEST-000002" {
+		t.Fatalf("CURRENT = %q, want MANIFEST-000002", current)
+	}
+	if _, err := os.Stat(filepath.Join(dir, initialManifest)); err == nil {
+		t.Fatal("old manifest should be removed after rotation")
+	}
+
+	m2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m2.Close()
+	ids := m2.LiveIDs()
+	if len(ids) != 5 {
+		t.Fatalf("live ids after rotation = %v, want 5 entries", ids)
 	}
 }

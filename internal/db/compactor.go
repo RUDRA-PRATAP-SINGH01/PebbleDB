@@ -58,6 +58,7 @@ func (db *DB) doCompaction() error {
 	if err != nil {
 		return err
 	}
+	maybeCrash(CrashAfterMergeClose)
 
 	db.mu.Lock()
 	if !readersStillPresent(db.sstables, compReaders) {
@@ -93,6 +94,10 @@ func (db *DB) doCompaction() error {
 		os.Remove(newReader.Path())
 		return err
 	}
+	maybeCrash(CrashAfterManifestSetFileSet)
+	if err := db.manifest.MaybeCompact(); err != nil {
+		return err
+	}
 
 	oldPaths := make([]string, len(compReaders))
 	for i, r := range compReaders {
@@ -112,6 +117,7 @@ func (db *DB) doCompaction() error {
 
 	db.sstables = newList
 	db.mu.Unlock()
+	maybeCrash(CrashAfterSSTablesUpdate)
 
 	db.trackReader(newReader)
 
@@ -127,6 +133,7 @@ func (db *DB) doCompaction() error {
 			}
 		}
 	}
+	maybeCrash(CrashAfterDeleteOldSSTs)
 
 	return nil
 }

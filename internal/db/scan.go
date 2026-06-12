@@ -15,9 +15,9 @@ const (
 
 // ScanIterator walks keys in [start, end) across memtables and SSTables.
 type ScanIterator struct {
-	db    *DB
-	merge *iterator.MergeIterator
-	end   []byte
+	db      *DB
+	merge   *iterator.MergeIterator
+	end     []byte
 	readers []*sstable.Reader
 	closed  bool
 }
@@ -56,10 +56,7 @@ func (it *ScanIterator) Next() error {
 	if closed {
 		return ErrClosed
 	}
-	if err := it.merge.Next(); err != nil {
-		return err
-	}
-	return nil
+	return it.merge.Next()
 }
 
 func (it *ScanIterator) Seek(key []byte) error {
@@ -93,11 +90,8 @@ func (it *ScanIterator) Close() error {
 
 // Scan returns an iterator over keys in the half-open range [start, end).
 // A nil or empty end scans to the last key.
+// Memtable layers are snapshotted (copy-on-read) so writes are not blocked.
 func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
-	if err := db.backgroundErr(); err != nil {
-		return nil, err
-	}
-
 	db.mu.RLock()
 	if db.closed {
 		db.mu.RUnlock()
@@ -107,13 +101,13 @@ func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
 	var sources []iterator.Iterator
 	var priorities []int
 
-	activeIt := &memtableIter{it: db.active.Iterator()}
-	sources = append(sources, activeIt)
+	activeSnap := db.active.Snapshot()
+	sources = append(sources, newSnapshotMemIter(activeSnap))
 	priorities = append(priorities, scanPriorityActive)
 
 	for i := len(db.pendingFlush) - 1; i >= 0; i-- {
-		immIt := &memtableIter{it: db.pendingFlush[i].mem.Iterator()}
-		sources = append(sources, immIt)
+		snap := db.pendingFlush[i].mem.Snapshot()
+		sources = append(sources, newSnapshotMemIter(snap))
 		pri := scanPriorityImmutable - (len(db.pendingFlush) - 1 - i)
 		priorities = append(priorities, pri)
 	}
@@ -158,27 +152,61 @@ func closeScanSources(sources []iterator.Iterator) {
 	}
 }
 
-type memtableIter struct {
-	it *memtable.SkipListIterator
+// snapshotMemIter iterates a memtable.Snapshot without holding any lock.
+type snapshotMemIter struct {
+	entries []memtable.SnapshotEntry
+	idx     int
 }
 
-func (m *memtableIter) Valid() bool       { return m.it.Valid() }
-func (m *memtableIter) Key() []byte       { return m.it.Key() }
-func (m *memtableIter) Value() []byte     { return m.it.Value() }
-func (m *memtableIter) IsTombstone() bool { return m.it.IsTombstone() }
+func newSnapshotMemIter(entries []memtable.SnapshotEntry) *snapshotMemIter {
+	return &snapshotMemIter{entries: entries}
+}
 
-func (m *memtableIter) Next() error {
-	m.it.Next()
+func (s *snapshotMemIter) Valid() bool {
+	return s.idx >= 0 && s.idx < len(s.entries)
+}
+
+func (s *snapshotMemIter) Key() []byte {
+	if !s.Valid() {
+		return nil
+	}
+	return append([]byte(nil), s.entries[s.idx].Key...)
+}
+
+func (s *snapshotMemIter) Value() []byte {
+	if !s.Valid() {
+		return nil
+	}
+	if s.entries[s.idx].Tombstone {
+		return nil
+	}
+	return append([]byte(nil), s.entries[s.idx].Value...)
+}
+
+func (s *snapshotMemIter) IsTombstone() bool {
+	if !s.Valid() {
+		return false
+	}
+	return s.entries[s.idx].Tombstone
+}
+
+func (s *snapshotMemIter) Next() error {
+	if s.idx < len(s.entries) {
+		s.idx++
+	}
 	return nil
 }
 
-func (m *memtableIter) Seek(key []byte) error {
-	m.it.Seek(key)
+func (s *snapshotMemIter) Seek(key []byte) error {
+	s.idx = 0
+	for s.idx < len(s.entries) && bytes.Compare(s.entries[s.idx].Key, key) < 0 {
+		s.idx++
+	}
 	return nil
 }
 
-func (m *memtableIter) Close() error {
-	m.it.Close()
+func (s *snapshotMemIter) Close() error {
+	s.entries = nil
 	return nil
 }
 

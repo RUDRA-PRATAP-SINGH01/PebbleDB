@@ -108,6 +108,7 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 		os.Remove(path)
 		return err
 	}
+	maybeCrash(CrashAfterSSTClose)
 
 	r, err := sstable.OpenReader(path)
 	if err != nil {
@@ -122,6 +123,10 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 		os.Remove(path)
 		return err
 	}
+	maybeCrash(CrashAfterManifestNewFile)
+	if err := db.manifest.MaybeCompact(); err != nil {
+		return err
+	}
 
 	db.mu.Lock()
 	db.sstables = append(db.sstables, r)
@@ -130,6 +135,8 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 
 	if err := db.completeWalAfterFlush(walCutoff, id); err != nil {
 		log.Printf("pebbledb: wal cleanup after flush of sst %d: %v (data is durable; reopen will recover)", id, err)
+	} else {
+		maybeCrash(CrashAfterWalTruncate)
 	}
 
 	db.maybeTriggerCompaction()
@@ -143,6 +150,7 @@ func (db *DB) completeWalAfterFlush(walCutoff int64, sstID uint64) error {
 	}); err != nil {
 		return err
 	}
+	maybeCrash(CrashAfterWalFlushState)
 	if err := db.wal.TruncateBefore(walCutoff); err != nil {
 		return err
 	}

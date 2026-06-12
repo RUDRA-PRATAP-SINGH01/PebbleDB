@@ -57,6 +57,7 @@ func removeWalFlushState(dir string) error {
 }
 
 // walReplayStartOffset returns the byte offset to begin WAL replay from.
+// If the WAL was truncated below FreezeOffset (crash after truncate), replay from 0.
 func (db *DB) walReplayStartOffset() (int64, error) {
 	st, ok, err := readWalFlushState(db.dir)
 	if err != nil || !ok {
@@ -66,6 +67,17 @@ func (db *DB) walReplayStartOffset() (int64, error) {
 		return 0, nil
 	}
 	if st.FreezeOffset < 0 {
+		return 0, nil
+	}
+	walPath := filepath.Join(db.dir, "wal.log")
+	fi, err := os.Stat(walPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if fi.Size() < st.FreezeOffset {
 		return 0, nil
 	}
 	return st.FreezeOffset, nil
