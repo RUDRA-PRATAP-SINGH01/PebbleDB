@@ -1,50 +1,164 @@
 # PebbleDB
 
-I built PebbleDB from scratch in Go to learn how a real log-structured merge tree handles durability, recovery, and concurrent reads. It is my own code — not a fork of RocksDB or CockroachDB's Pebble.
+I built PebbleDB from scratch in Go — a single-node embedded LSM key-value store. Not a fork of RocksDB or CockroachDB's Pebble. Every layer (WAL, memtable, SSTable, manifest, compaction, recovery) is code I wrote and debugged until crash recovery and concurrent reads behaved correctly.
 
-**Status:** educational embedded engine with real crash recovery and race-tested compaction. I do not claim production readiness.
+**Status:** educational embedded engine. Real crash recovery, race-tested compaction. Not production-ready.
 
-[docs/](docs/README.md)
+Full docs: [docs/](docs/README.md)
 
 ---
 
 ## Why I built this
 
-I wanted to understand storage engines by implementing one layer at a time: WAL, memtable, SSTable, manifest, compaction, recovery. Reading papers and existing code was not enough — I needed to hit the bugs myself (WAL replay duplicating flushed data, manifest/memory ordering, compaction races).
+I wanted to understand storage engines by building one, not reading about one. I implemented in phases — WAL + memtable first, then SSTables, manifest, compaction, recovery — and fixed real bugs along the way: WAL replay duplicating flushed data, manifest/memory ordering after crashes, compaction racing with in-flight `Get` calls.
 
 ---
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph API
-        PUT["Put / Delete"]
-        GET["Get"]
-        SCAN["Scan"]
+flowchart TB
+    subgraph Client["Client"]
+        CLI["cmd/pebbledb"]
+        API["internal/db"]
     end
 
-    subgraph Memory
-        MT["memtable"]
-        Q["pendingFlush"]
+    subgraph Memory["In-memory"]
+        ACTIVE["active memtable"]
+        PENDING["pendingFlush queue"]
+        SSTLIST["sstables[]"]
     end
 
-    subgraph Disk
+    subgraph Workers["Background workers"]
+        BATCH["batchFlusher"]
+        FLUSH["flusher"]
+        COMPACT["compactor"]
+    end
+
+    subgraph Disk["On disk"]
         WAL["wal.log"]
         MAN["MANIFEST"]
         SST["sst_*.sst"]
+        LOCK["LOCK"]
     end
 
-    PUT --> WAL --> MT
-    MT --> Q --> SST
-    SST --> MAN
-    GET --> MT
-    GET --> SST
-    SCAN --> MT
-    SCAN --> SST
+    CLI --> API
+    API --> ACTIVE
+    API --> WAL
+    BATCH --> WAL
+    BATCH --> ACTIVE
+    FLUSH --> PENDING
+    FLUSH --> SST
+    FLUSH --> MAN
+    COMPACT --> SST
+    COMPACT --> MAN
+    API --> LOCK
 ```
 
-Details: [docs/architecture/SYSTEM_OVERVIEW.md](docs/architecture/SYSTEM_OVERVIEW.md) · [diagrams/](docs/diagrams/)
+**Write flow:** `Put` → WAL batch → memtable → background flush → SST + manifest.
+
+**Read flow:** `Get` walks memtable → frozen flush queue → SSTables (newest wins, bloom-filtered).
+
+**Recovery:** load manifest + SSTables first, replay only the WAL tail not yet flushed.
+
+More: [docs/architecture/SYSTEM_OVERVIEW.md](docs/architecture/SYSTEM_OVERVIEW.md)
+
+---
+
+## Core components
+
+| Component | Package | What it does |
+|-----------|---------|--------------|
+| WAL | `internal/wal` | Append-only log, CRC per record, atomic truncate after flush |
+| Memtable | `internal/memtable` | Concurrent skip list; snapshot copy for non-blocking scan |
+| SSTable | `internal/sstable` | Immutable sorted files — 4 KiB blocks, index, bloom, footer |
+| Manifest | `internal/manifest` | Append-only log of the live SST set; atomic `CURRENT` rotation |
+| Iterator | `internal/iterator` | K-way merge for range scan; newest key wins, tombstones hidden |
+| Bloom filter | `internal/bloom` | Per-SST negative lookup — skip whole files on miss |
+| DB | `internal/db` | Open/Close, workers, recovery, Get/Put/Scan orchestration |
+| CLI | `cmd/pebbledb` | `put`, `get`, `delete`, `scan`, `sync` |
+
+---
+
+## Write path
+
+Default mode is **group commit**: `Put` queues records and often returns before WAL fsync. A background flusher batches writes and fsyncs once per ~1 ms or 64 records.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant DB
+    participant WAL
+    participant MT as memtable
+
+    App->>DB: Put(key, value)
+    alt async (default)
+        DB-->>App: return nil
+        DB->>WAL: AppendBatch + fsync (later)
+        DB->>MT: apply
+    else SyncWrites or Sync()
+        DB->>WAL: AppendBatch + fsync
+        DB->>MT: apply
+        DB-->>App: return
+    end
+```
+
+When the memtable exceeds 4 MiB, it freezes into `pendingFlush`, writes an SST, commits to manifest, then truncates the WAL.
+
+Details: [docs/architecture/WRITE_PATH.md](docs/architecture/WRITE_PATH.md)
+
+---
+
+## Read path
+
+`Get` checks layers from newest to oldest and stops at the first hit. SST lookups use a bloom filter to skip files that cannot contain the key.
+
+```mermaid
+flowchart TD
+    G["Get(key)"] --> A["active memtable"]
+    A -->|miss| P["pendingFlush queue"]
+    P -->|miss| B["pendingBatch"]
+    B -->|miss| S["SSTables newest→oldest"]
+    S --> BL["bloom filter"]
+    BL --> BK["block read"]
+```
+
+`Scan` snapshots memtables at creation time and merges with SST iterators. Writes during an open scan do not block.
+
+Details: [docs/architecture/READ_PATH.md](docs/architecture/READ_PATH.md)
+
+---
+
+## Recovery
+
+On `Open`, SSTables load from the manifest — not from directory glob. A `wal.flush` checkpoint records how much of the WAL was already flushed to SST, so replay skips redundant bytes.
+
+```mermaid
+flowchart LR
+    O["Open"] --> M["replay manifest"]
+    M --> L["load SSTables"]
+    L --> W["WAL replay from offset"]
+    W --> R["start workers"]
+```
+
+Orphan SST files not in the manifest move to `quarantine/`. Crash injection tests exit the process at flush/compaction boundaries and verify data after reopen.
+
+Details: [docs/architecture/RECOVERY.md](docs/architecture/RECOVERY.md) · [docs/postmortems/](docs/postmortems/)
+
+---
+
+## On-disk layout
+
+```
+pebbledb-data/
+├── LOCK              # single-process lock
+├── CURRENT           # points to active manifest
+├── MANIFEST-000001   # live SST set edits
+├── wal.log           # write-ahead log
+├── wal.flush         # flush checkpoint (usually absent)
+├── sst_00000001.sst  # immutable sorted runs
+└── quarantine/       # orphan SSTs moved on open
+```
 
 ---
 
@@ -52,13 +166,13 @@ Details: [docs/architecture/SYSTEM_OVERVIEW.md](docs/architecture/SYSTEM_OVERVIE
 
 | Area | Supported |
 |------|-----------|
-| Write path | Group commit WAL, optional `SyncWrites`, memtable flush |
-| Read path | Layered Get, per-SST bloom filters, optional block cache |
-| Range scan | Merge iterator, tombstone filtering, snapshot isolation |
-| Compaction | Size-tiered oldest-2 merge |
-| Recovery | Manifest-driven SST load, `wal.flush` replay offset, orphan quarantine |
-| Concurrency | Concurrent Get/Scan; single writer; `go test -race` in CI |
-| Crash testing | Subprocess crash points at flush/compaction boundaries |
+| Writes | Group commit WAL, `Sync()`, `SyncWrites`, memtable flush |
+| Reads | Layered `Get`, per-SST bloom, optional block cache |
+| Scan | Merge iterator, tombstone filtering, point-in-time snapshot |
+| Compaction | Oldest-2 size-tiered merge when SST count ≥ 4 |
+| Recovery | Manifest-driven load, `wal.flush` replay offset, orphan quarantine |
+| Concurrency | Concurrent `Get`/`Scan`; single writer; `-race` CI on Linux/macOS |
+| Crash tests | Subprocess crash at flush/compaction boundaries |
 | CLI | `put`, `get`, `delete`, `scan`, `sync` |
 
 **Not included:** replication, transactions, MVCC, SQL, network server.
@@ -71,32 +185,36 @@ Details: [docs/architecture/SYSTEM_OVERVIEW.md](docs/architecture/SYSTEM_OVERVIE
 go build -o pebbledb ./cmd/pebbledb
 
 ./pebbledb put hello world
-./pebbledb sync          # durability barrier after async puts
+./pebbledb sync              # fsync pending writes (async mode)
 ./pebbledb get hello
 
-./pebbledb -sync-writes put durable value   # fsync per write
+./pebbledb -sync-writes put durable value
 ./pebbledb scan
+./pebbledb scan apple banana   # range [start, end)
 ```
 
-Go library:
+Library:
 
 ```go
 database, _ := db.Open(db.Options{Dir: "./data"})
 defer database.Close()
+
 database.Put([]byte("k"), []byte("v"))
-database.Sync() // if using default async writes
+database.Sync()  // required if not using SyncWrites
+
+val, _ := database.Get([]byte("k"))
 ```
 
 ---
 
-## Testing highlights
+## Testing
 
 ```bash
 go test ./... -race
 go test ./internal/db -run Crash -v
 ```
 
-CI (Linux + macOS): vet, lint, `-race -shuffle=on` full suite.
+CI runs vet, lint, and `go test -race -shuffle=on ./...` on Ubuntu and macOS.
 
 [docs/testing/TESTING_STRATEGY.md](docs/testing/TESTING_STRATEGY.md)
 
@@ -108,49 +226,33 @@ CI (Linux + macOS): vet, lint, `-race -shuffle=on` full suite.
 go test -bench=. -benchmem -count=1 ./internal/db
 ```
 
-Default write benches use async group commit, not per-key fsync. [docs/benchmarks/METHODOLOGY.md](docs/benchmarks/METHODOLOGY.md)
+Default write benchmarks use async group commit, not per-key fsync.
+
+[docs/benchmarks/METHODOLOGY.md](docs/benchmarks/METHODOLOGY.md)
 
 ---
 
-## Repository map
-
-```
-cmd/pebbledb/       CLI
-internal/db/        orchestration, workers, recovery
-internal/wal/       write-ahead log
-internal/memtable/  skip list + snapshot
-internal/sstable/   immutable sorted files
-internal/manifest/  live SST set log
-internal/iterator/  merge iterator
-internal/bloom/     bloom filters
-docs/               engineering documentation
-```
-
----
-
-## Documentation index
+## Documentation
 
 | Topic | Link |
 |-------|------|
-| System overview | [docs/architecture/SYSTEM_OVERVIEW.md](docs/architecture/SYSTEM_OVERVIEW.md) |
-| Write / read / recovery | [docs/architecture/](docs/architecture/) |
+| Architecture | [docs/architecture/](docs/architecture/) |
 | Design decisions | [docs/design/DECISIONS.md](docs/design/DECISIONS.md) |
-| Evolution | [docs/design/EVOLUTION.md](docs/design/EVOLUTION.md) |
-| Postmortems | [docs/postmortems/](docs/postmortems/) |
-| Testing | [docs/testing/](docs/testing/) |
-| Benchmarks | [docs/benchmarks/](docs/benchmarks/) |
+| How it evolved | [docs/design/EVOLUTION.md](docs/design/EVOLUTION.md) |
+| Bug postmortems | [docs/postmortems/](docs/postmortems/) |
+| Diagrams (Mermaid) | [docs/diagrams/](docs/diagrams/) |
 
 ---
 
-## Project limits
+## Limits
 
 - One process per database directory (`LOCK` file)
-- Scan copies memtable at creation — memory cost on large memtables
-- Oldest-2 compaction — read amplification grows with data
+- Scan copies the memtable at creation — memory cost on large memtables
+- Oldest-2 compaction — read amplification grows with data size
 - Iterator does not see data flushed after `Scan()` returns
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — [LICENSE](LICENSE)
