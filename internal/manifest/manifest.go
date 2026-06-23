@@ -255,32 +255,47 @@ func (l *Log) append(record []byte, apply func()) error {
 
 // MaybeCompact rewrites the manifest as a single SetFileSet snapshot and rotates
 // to a new manifest file when the log grows too large.
+//
+// The entire check, snapshot, disk I/O, and handle swap run under l.mu so no
+// concurrent append can write to a manifest file that is about to be deleted
+// (C1/C2/C3).
 func (l *Log) MaybeCompact() error {
 	l.mu.Lock()
-	need := l.recordCount >= compactRecordThreshold
-	var size int64
-	if !need {
-		if fi, err := l.file.Stat(); err == nil {
-			size = fi.Size()
-			need = size >= compactSizeThreshold
-		}
-	}
-	if !need {
-		l.mu.Unlock()
+	defer l.mu.Unlock()
+
+	if !l.compactionNeededLocked() {
 		return nil
 	}
+	return l.rotateSnapshotLocked()
+}
+
+func (l *Log) compactionNeededLocked() bool {
+	if l.recordCount >= compactRecordThreshold {
+		return true
+	}
+	fi, err := l.file.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Size() >= compactSizeThreshold
+}
+
+func (l *Log) liveIDsLocked() []uint64 {
 	ids := make([]uint64, 0, len(l.liveSet))
 	for id := range l.liveSet {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	oldPath := l.path
-	l.mu.Unlock()
-
-	return l.rotateSnapshot(ids, oldPath)
+	return ids
 }
 
-func (l *Log) rotateSnapshot(ids []uint64, oldPath string) error {
+// rotateSnapshotLocked writes a fresh SetFileSet snapshot and rotates CURRENT.
+// l.mu must be held for the entire call; callers must not release the lock
+// between snapshotting liveSet and removing the old manifest file.
+func (l *Log) rotateSnapshotLocked() error {
+	oldPath := l.path
+	ids := l.liveIDsLocked()
+
 	newName, err := nextManifestName(oldPath)
 	if err != nil {
 		return err
@@ -311,8 +326,6 @@ func (l *Log) rotateSnapshot(ids []uint64, oldPath string) error {
 		return err
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.file != nil {
 		_ = l.file.Close()
 	}
