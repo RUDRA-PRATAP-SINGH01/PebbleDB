@@ -78,6 +78,10 @@ func (db *DB) Close() error {
 		}
 	}
 
+	// Stop flush/compaction before closing SST readers; otherwise doCompaction
+	// can read blocks while discardAllReaders closes the same files (-race).
+	shutdownWorkers()
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	db.sstables = nil

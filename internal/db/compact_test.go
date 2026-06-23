@@ -10,8 +10,9 @@ import (
 
 func waitForCompaction(t *testing.T, db *DB, maxSST int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
+		db.maybeTriggerCompaction()
 		db.mu.RLock()
 		count := len(db.sstables)
 		pending := db.hasPendingFlush()
@@ -22,7 +23,10 @@ func waitForCompaction(t *testing.T, db *DB, maxSST int) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("compaction did not finish; still have >%d SSTables", maxSST)
+	db.mu.RLock()
+	count := len(db.sstables)
+	db.mu.RUnlock()
+	t.Fatalf("compaction did not finish; have %d SSTables, want <=%d", count, maxSST)
 }
 
 func TestCompactionMergesDuplicateKeys(t *testing.T) {

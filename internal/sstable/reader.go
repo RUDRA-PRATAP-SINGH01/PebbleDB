@@ -24,7 +24,7 @@ type Reader struct {
 	closePending   atomic.Bool
 	discardPending atomic.Bool
 	fileClosed     atomic.Bool
-	closeMu        sync.Mutex
+	closeMu        sync.RWMutex
 }
 
 // OpenReader opens an SSTable at path. cache may be nil to disable block caching.
@@ -102,15 +102,17 @@ func OpenReader(path string, cache *BlockCache) (*Reader, error) {
 
 // readBlock returns a block at offset/length, consulting the LRU cache first.
 func (r *Reader) readBlock(offset, length uint64) ([]byte, error) {
-	if r.file == nil || r.fileClosed.Load() {
-		return nil, os.ErrClosed
-	}
-
 	key := blockCacheKey(r.fileID, offset)
 	if r.blockCache != nil {
 		if data, ok := r.blockCache.get(key); ok {
 			return data, nil
 		}
+	}
+
+	r.closeMu.RLock()
+	defer r.closeMu.RUnlock()
+	if r.file == nil || r.fileClosed.Load() {
+		return nil, os.ErrClosed
 	}
 
 	blockData := make([]byte, length)

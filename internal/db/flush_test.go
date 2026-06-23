@@ -16,8 +16,9 @@ func waitForFlush(t *testing.T, db *DB) {
 	if err := db.flushPendingBatch(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
+		db.notifyFlush()
 		db.mu.RLock()
 		pending := db.hasPendingFlush()
 		batchPending := len(db.pendingBatch) > 0

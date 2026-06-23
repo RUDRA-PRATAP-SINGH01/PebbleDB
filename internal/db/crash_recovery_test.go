@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/sstable"
 )
 
 const crashTestDirEnv = "PEBBLEDB_TEST_DIR"
@@ -268,11 +270,16 @@ func TestCrashRecoveryOrphanSSTIgnored(t *testing.T) {
 	_ = db1.Close()
 
 	orphan := filepath.Join(dir, "sst_00000001.sst")
-	w, err := os.Create(orphan)
+	w, err := sstable.NewWriter(orphan, 4096, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	if err := w.Add([]byte("A"), []byte("stale"), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	db2, err := Open(Options{Dir: dir})
 	if err != nil {
