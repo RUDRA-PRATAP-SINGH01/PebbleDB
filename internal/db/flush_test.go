@@ -13,17 +13,21 @@ const flushTestThreshold int64 = 8
 
 func waitForFlush(t *testing.T, db *DB) {
 	t.Helper()
+	if err := db.flushPendingBatch(); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		db.mu.RLock()
 		pending := db.hasPendingFlush()
+		batchPending := len(db.pendingBatch) > 0
 		sstCount := len(db.sstables)
 		db.mu.RUnlock()
 
 		if err := db.BackgroundError(); err != nil {
 			t.Fatalf("background error during flush: %v", err)
 		}
-		if !pending && sstCount > 0 {
+		if !pending && !batchPending && sstCount > 0 {
 			time.Sleep(50 * time.Millisecond)
 			return
 		}
@@ -32,10 +36,11 @@ func waitForFlush(t *testing.T, db *DB) {
 
 	db.mu.RLock()
 	pending := db.hasPendingFlush()
+	batchPending := len(db.pendingBatch) > 0
 	sstCount := len(db.sstables)
 	db.mu.RUnlock()
-	t.Fatalf("flush did not complete in time (pending=%v sstables=%d bgErr=%v)",
-		pending, sstCount, db.BackgroundError())
+	t.Fatalf("flush did not complete in time (pending=%v batch=%v sstables=%d bgErr=%v)",
+		pending, batchPending, sstCount, db.BackgroundError())
 }
 
 func TestFlusher(t *testing.T) {
@@ -172,6 +177,9 @@ func TestWALPreservedAfterFlush(t *testing.T) {
 	waitForFlush(t, db)
 
 	if err := db.Put([]byte("after-flush"), []byte("survives")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.flushPendingBatch(); err != nil {
 		t.Fatal(err)
 	}
 

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/manifest"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
@@ -43,8 +44,17 @@ type DB struct {
 	nextSSTID        uint64
 	memtableSize     int64
 	compactThreshold int
-	walLimits wal.ReplayLimits
-	bgErr     atomic.Pointer[BackgroundError]
+	walLimits  wal.ReplayLimits
+	blockCache *sstable.BlockCache
+	bgErr      atomic.Pointer[BackgroundError]
+
+	// Group commit: batch WAL appends and fsync once per batch.
+	pendingBatch   []wal.Record
+	batchSizeBytes int
+	batchTimer     *time.Timer
+	batchFlushCh   chan struct{}
+	batchStop      chan struct{}
+	batchDone      chan struct{}
 }
 
 type flushQueueEntry struct {
@@ -58,6 +68,7 @@ type Options struct {
 	MemtableSize int64 // bytes; 0 uses default (4MB)
 	CompactionThreshold   int   // SSTable count before compaction; 0 uses default (4)
 	WALReplayLimits       wal.ReplayLimits
+	BlockCacheSize        int64 // bytes; 0 uses default (32 MiB); negative disables caching
 }
 
 // Open opens or creates a database at the given directory.
@@ -78,16 +89,28 @@ func Open(opts Options) (*DB, error) {
 
 	walLimits := opts.WALReplayLimits.WithDefaults()
 
+	var blockCache *sstable.BlockCache
+	if opts.BlockCacheSize < 0 {
+		blockCache = nil
+	} else {
+		blockCache = sstable.NewBlockCache(int(opts.BlockCacheSize))
+	}
+
 	db := &DB{
 		dir:                 opts.Dir,
 		active:              memtable.NewSkipList(),
 		memtableSize:        memtableSize,
 		compactThreshold: compactThreshold,
 		walLimits:        walLimits,
+		blockCache:       blockCache,
 		flushCh:          make(chan struct{}, 8),
 		flushDone:        make(chan struct{}),
 		compactCh:        make(chan struct{}, 8),
 		compactDone:      make(chan struct{}),
+		batchFlushCh:     make(chan struct{}, 1),
+		batchStop:        make(chan struct{}),
+		batchDone:        make(chan struct{}),
+		pendingBatch:     make([]wal.Record, 0, batchMaxRecords),
 	}
 
 	m, err := manifest.Open(opts.Dir)
@@ -141,6 +164,7 @@ func Open(opts Options) (*DB, error) {
 	}
 	db.wal = w
 
+	go db.batchFlusher()
 	go db.flusher()
 	go db.compactor()
 	db.maybeTriggerCompaction()
@@ -185,7 +209,7 @@ func (db *DB) closeLoadedReaders() {
 func (db *DB) loadSSTables() error {
 	for _, id := range db.manifest.LiveIDs() {
 		path := sstFilePath(db.dir, id)
-		r, err := sstable.OpenReader(path)
+		r, err := sstable.OpenReader(path, db.blockCache)
 		if err != nil {
 			return err
 		}

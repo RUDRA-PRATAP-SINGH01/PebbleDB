@@ -69,7 +69,7 @@ func TestSSTableRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := OpenReader(path)
+	r, err := OpenReader(path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestSSTableBloomFilterSkip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := OpenReader(path)
+	r, err := OpenReader(path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

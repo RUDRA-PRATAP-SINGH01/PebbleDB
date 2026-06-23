@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # Pinned to the latest stable version guaranteed on GitHub Actions runner images.
+  # 1.23.4 is universally available; upgrade this manually when runners update.
+  GO_VERSION: "1.23.4"
+
+jobs:
+  ci:
+    name: ci (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # PebbleDB uses atomic os.Rename for WAL truncate, SST finalization, manifest
+        # CURRENT rotation, and wal.flush checkpoints. On Windows, rename/replace fails
+        # while a file handle is still open. We close handles before rename in several
+        # paths (manifest truncateTo, WAL truncate, SST writer Close) but there are no
+        # //go:build windows stubs and CI file-lock races are still common on windows-latest.
+        # ubuntu + macos match our primary deployment targets and avoid false reds.
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false # we manage module + build caches explicitly below
+
+      - name: Cache Go modules and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          # Hash go.sum (and go.mod as fallback when the module has zero deps) with the
+          # pinned Go version so dep or toolchain bumps invalidate stale caches.
+          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ hashFiles('go.sum', 'go.mod') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ env.GO_VERSION }}-
+
+      - name: Verify module files are tidy
+        run: |
+          # -diff prints required edits and exits non-zero when go.mod/go.sum drift.
+          go mod tidy -diff
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build CLI
+        # Catch link errors in cmd/pebbledb before we spend time on the full test suite.
+        run: |
+          mkdir -p bin
+          go build -o ./bin/pebbledb ./cmd/pebbledb
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+      - name: Test (race, shuffle, coverage)
+        run: |
+          set -o pipefail
+          # count=1 disables the Go test cache — WAL/manifest truncation flakes hide behind cached passes.
+          # shuffle=on reorders tests to catch ordering assumptions in flush/compaction integration tests.
+          go test -race -count=1 -shuffle=on -coverprofile=coverage.out -json ./... 2>&1 | tee test-output.json
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## PebbleDB test results (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -f test-output.json ]; then
+            echo "test-output.json missing — test step may have failed before producing output." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          PASSED=$(grep -c '"Action":"pass"' test-output.json || true)
+          FAILED=$(grep -c '"Action":"fail"' test-output.json || true)
+          SKIPPED=$(grep -c '"Action":"skip"' test-output.json || true)
+          echo "| Outcome | Count |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| pass | ${PASSED} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| fail | ${FAILED} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| skip | ${SKIPPED} |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${FAILED}" -gt 0 ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Failed test events (first 25)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            grep '"Action":"fail"' test-output.json | head -25 >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi

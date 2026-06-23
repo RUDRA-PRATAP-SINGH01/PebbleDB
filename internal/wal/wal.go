@@ -46,11 +46,41 @@ func OpenWithLimits(path string, limits ReplayLimits) (*WAL, error) {
 func (w *WAL) Append(rec Record) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	_, err := w.appendRecordLocked(rec)
+	return err
+}
 
+// AppendBatch writes multiple records sequentially and fsyncs once at the end.
+// If any write or Sync fails, the batch is not considered durable; callers must
+// not apply records to the memtable.
+func (w *WAL) AppendBatch(records []Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, rec := range records {
+		if _, err := w.appendRecordLocked(rec); err != nil {
+			return err
+		}
+	}
+	return w.file.Sync()
+}
+
+func (w *WAL) appendRecordLocked(rec Record) (int, error) {
+	buf, err := encodeRecord(rec, w.limits)
+	if err != nil {
+		return 0, err
+	}
+	n, err := w.file.Write(buf)
+	return n, err
+}
+
+func encodeRecord(rec Record, limits ReplayLimits) ([]byte, error) {
 	keyLen := len(rec.Key)
 	valueLen := len(rec.Value)
-	if err := w.limits.validateRecord(uint32(keyLen), uint32(valueLen)); err != nil {
-		return err
+	if err := limits.validateRecord(uint32(keyLen), uint32(valueLen)); err != nil {
+		return nil, err
 	}
 
 	tombByte := byte(0)
@@ -59,23 +89,14 @@ func (w *WAL) Append(rec Record) error {
 	}
 
 	buf := make([]byte, 0, 4+keyLen+4+valueLen+1+4)
-
 	buf = binary.BigEndian.AppendUint32(buf, uint32(keyLen))
 	buf = append(buf, rec.Key...)
-
 	buf = binary.BigEndian.AppendUint32(buf, uint32(valueLen))
 	buf = append(buf, rec.Value...)
-
 	buf = append(buf, tombByte)
-
 	checksum := crc32.ChecksumIEEE(buf)
 	buf = binary.BigEndian.AppendUint32(buf, checksum)
-
-	_, err := w.file.Write(buf)
-	if err != nil {
-		return err
-	}
-	return nil
+	return buf, nil
 }
 
 // Sync ensures all writes are flushed to disk.

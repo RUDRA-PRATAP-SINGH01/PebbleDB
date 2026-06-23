@@ -92,6 +92,10 @@ func (it *ScanIterator) Close() error {
 // A nil or empty end scans to the last key.
 // Memtable layers are snapshotted (copy-on-read) so writes are not blocked.
 func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
+	if err := db.flushPendingBatch(); err != nil {
+		return nil, err
+	}
+
 	db.mu.RLock()
 	if db.closed {
 		db.mu.RUnlock()

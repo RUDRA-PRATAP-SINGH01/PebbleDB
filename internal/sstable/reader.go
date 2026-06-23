@@ -17,13 +17,16 @@ type Reader struct {
 	footer       Footer
 	index        []IndexEntry
 	bloom        *bloom.Filter
+	fileID       uint64
+	blockCache   *BlockCache
 	refs         atomic.Int32
 	closePending atomic.Bool
 	fileClosed   atomic.Bool
 	closeMu      sync.Mutex
 }
 
-func OpenReader(path string) (*Reader, error) {
+// OpenReader opens an SSTable at path. cache may be nil to disable block caching.
+func OpenReader(path string, cache *BlockCache) (*Reader, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -84,7 +87,37 @@ func OpenReader(path string) (*Reader, error) {
 		}
 	}
 
-	return &Reader{file: f, footer: *footer, index: index, bloom: bf}, nil
+	return &Reader{
+		file:       f,
+		footer:     *footer,
+		index:      index,
+		bloom:      bf,
+		fileID:     nextReaderFileID.Add(1),
+		blockCache: cache,
+	}, nil
+}
+
+// readBlock returns a block at offset/length, consulting the LRU cache first.
+func (r *Reader) readBlock(offset, length uint64) ([]byte, error) {
+	if r.file == nil || r.fileClosed.Load() {
+		return nil, os.ErrClosed
+	}
+
+	key := blockCacheKey(r.fileID, offset)
+	if r.blockCache != nil {
+		if data, ok := r.blockCache.get(key); ok {
+			return data, nil
+		}
+	}
+
+	blockData := make([]byte, length)
+	if _, err := r.file.ReadAt(blockData, int64(offset)); err != nil {
+		return nil, err
+	}
+	if r.blockCache != nil {
+		r.blockCache.add(key, blockData)
+	}
+	return blockData, nil
 }
 
 func decodeIndex(data []byte) ([]IndexEntry, error) {
@@ -137,8 +170,8 @@ func (r *Reader) Get(key []byte) (value []byte, found bool, tombstone bool, err 
 		return nil, false, false, nil
 	}
 	entry := r.index[idx]
-	blockData := make([]byte, entry.Length)
-	if _, err := r.file.ReadAt(blockData, int64(entry.Offset)); err != nil {
+	blockData, err := r.readBlock(entry.Offset, entry.Length)
+	if err != nil {
 		return nil, false, false, err
 	}
 	it := NewBlockIterator(blockData)

@@ -2,25 +2,45 @@ package db
 
 import "github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/wal"
 
-func (db *DB) writeRecord(rec wal.Record, apply func()) error {
+func (db *DB) writeRecord(rec wal.Record) error {
 	if err := db.backgroundErr(); err != nil {
 		return err
 	}
+
+	rec = copyRecord(rec)
 
 	db.mu.Lock()
 	if db.closed {
 		db.mu.Unlock()
 		return ErrClosed
 	}
-	if err := db.wal.Append(rec); err != nil {
+
+	db.pendingBatch = append(db.pendingBatch, rec)
+	db.batchSizeBytes += recordWireSize(rec)
+	db.scheduleBatchFlushLocked()
+
+	flushNow := len(db.pendingBatch) >= batchMaxRecords ||
+		db.batchSizeBytes >= batchMaxBytes ||
+		db.active.Size()+int64(db.batchSizeBytes) > db.memtableSize
+	if !flushNow {
 		db.mu.Unlock()
+		return nil
+	}
+
+	batch := append([]wal.Record(nil), db.pendingBatch...)
+	db.pendingBatch = db.pendingBatch[:0]
+	db.batchSizeBytes = 0
+	db.mu.Unlock()
+
+	if err := db.wal.AppendBatch(batch); err != nil {
+		db.setBackgroundErr("wal", err)
 		return err
 	}
-	if err := db.wal.Sync(); err != nil {
-		db.mu.Unlock()
-		return err
+
+	db.mu.Lock()
+	for _, r := range batch {
+		applyRecordToMemtable(db, r)
 	}
-	apply()
 	shouldFlush, err := db.maybeFlushLocked()
 	db.mu.Unlock()
 	if err != nil {

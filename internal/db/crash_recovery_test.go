@@ -31,7 +31,13 @@ func runCrashSubprocess(t *testing.T, testName, crashAt, dir string) {
 
 func triggerFlush(db *DB, t *testing.T) {
 	t.Helper()
+	if err := db.flushPendingBatch(); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Put([]byte("anchor"), []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.flushPendingBatch(); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 12; i++ {
@@ -143,13 +149,15 @@ func TestCrashRecoveryCompactAfterManifest(t *testing.T) {
 }
 
 func waitForFlushNoT(db *DB) {
+	_ = db.flushPendingBatch()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		db.mu.RLock()
 		pending := len(db.pendingFlush)
+		batchPending := len(db.pendingBatch) > 0
 		sst := len(db.sstables)
 		db.mu.RUnlock()
-		if pending == 0 && sst > 0 {
+		if pending == 0 && !batchPending && sst > 0 {
 			time.Sleep(50 * time.Millisecond)
 			return
 		}

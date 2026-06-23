@@ -85,8 +85,8 @@ func (it *Iterator) Seek(key []byte) error {
 	}
 	for bi := idx; bi < len(it.reader.index); bi++ {
 		entry := it.reader.index[bi]
-		blockData := make([]byte, entry.Length)
-		if _, err := it.reader.file.ReadAt(blockData, int64(entry.Offset)); err != nil {
+		blockData, err := it.reader.readBlock(entry.Offset, entry.Length)
+		if err != nil {
 			it.err = err
 			it.valid = false
 			return err
@@ -129,8 +129,8 @@ func (it *Iterator) advance() {
 		}
 
 		entry := it.reader.index[it.blockIdx]
-		blockData := make([]byte, entry.Length)
-		if _, err := it.reader.file.ReadAt(blockData, int64(entry.Offset)); err != nil {
+		blockData, err := it.reader.readBlock(entry.Offset, entry.Length)
+		if err != nil {
 			it.err = err
 			it.valid = false
 			return

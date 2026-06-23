@@ -100,7 +100,7 @@ func (db *DB) mergeSSTables(readers []*sstable.Reader) (*sstable.Reader, uint64,
 		return nil, 0, err
 	}
 
-	merged, err := sstable.OpenReader(path)
+	merged, err := sstable.OpenReader(path, db.blockCache)
 	if err != nil {
 		os.Remove(path)
 		return nil, 0, err

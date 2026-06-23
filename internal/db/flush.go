@@ -110,7 +110,7 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 	}
 	maybeCrash(CrashAfterSSTClose)
 
-	r, err := sstable.OpenReader(path)
+	r, err := sstable.OpenReader(path, db.blockCache)
 	if err != nil {
 		os.Remove(path)
 		return err

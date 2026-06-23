@@ -18,9 +18,18 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closed = true
+	if db.batchTimer != nil {
+		db.batchTimer.Stop()
+		db.batchTimer = nil
+	}
 	db.mu.Unlock()
 
 	var closeErr error
+
+	db.stopBatchFlusher()
+	if err := db.flushPendingBatch(); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
 
 	for {
 		var needFlush bool

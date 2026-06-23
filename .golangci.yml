@@ -1,0 +1,33 @@
+# .golangci.yml
+linters:
+  enable:
+    - gofmt          # Enforce formatting
+    - govet          # Catch suspicious constructs
+    - staticcheck    # Go static analysis (preferable to deprecated deadcode)
+    - unused         # Detect unused constants/variables/functions
+    - ineffassign    # Detect useless assignments
+    - gosimple       # Simplify code
+  disable:
+    - errcheck       # Disabled to avoid failing on intentional test errors, but we keep govet
+    - gocyclo        # Disables cyclomatic complexity check (our compaction logic is complex by nature)
+    - funlen         # Disables function length check (LSM code requires long functions for performance)
+    - godox          # Ignore TODOs in CI
+    - goimports      # We use gofmt, imports are fine
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-files:
+    - ".*\\.pb\\.go$"  # Ignore generated proto files (if any)
+    - ".*test\\.go$"   # Ignore test files for unused warnings (test helpers are often unused externally)
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment  # Disable struct alignment warnings (we prioritize read/write layout over memory padding)
+  staticcheck:
+    checks:
+      - "all"
+      - "-SA1019"       # Ignore deprecated function warnings (we use some legacy patterns for cross-platform compatibility)

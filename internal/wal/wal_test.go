@@ -7,6 +7,36 @@ import (
 	"testing"
 )
 
+func TestWALAppendBatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	recs := []Record{
+		{Key: []byte("a"), Value: []byte("1")},
+		{Key: []byte("b"), Value: []byte("2")},
+		{Key: []byte("c"), Value: nil, Tombstone: true},
+	}
+	if err := w.AppendBatch(recs); err != nil {
+		t.Fatal(err)
+	}
+
+	var replayed []Record
+	if err := Replay(path, func(r Record) error {
+		replayed = append(replayed, r)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(replayed) != len(recs) {
+		t.Fatalf("got %d records, want %d", len(replayed), len(recs))
+	}
+}
+
 func TestWALAppendAndReplay(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal.log")
 

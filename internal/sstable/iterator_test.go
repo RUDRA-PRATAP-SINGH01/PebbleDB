@@ -31,7 +31,7 @@ func TestMergeReadersDedupesKeys(t *testing.T) {
 		if err := w.Close(); err != nil {
 			t.Fatal(err)
 		}
-		r, err := OpenReader(path)
+		r, err := OpenReader(path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -55,7 +55,7 @@ func TestMergeReadersDedupesKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	merged, err := OpenReader(outPath)
+	merged, err := OpenReader(outPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
