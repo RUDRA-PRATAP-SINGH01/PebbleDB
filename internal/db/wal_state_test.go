@@ -139,7 +139,7 @@ func TestScanAllowedDuringBackgroundError(t *testing.T) {
 	}
 }
 
-func TestPutBlockedDuringBackgroundError(t *testing.T) {
+func TestPutBlockedDuringWalBackgroundError(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(Options{Dir: dir})
 	if err != nil {
@@ -147,10 +147,10 @@ func TestPutBlockedDuringBackgroundError(t *testing.T) {
 	}
 	defer db.Close()
 
-	db.setBackgroundErr("flush", os.ErrPermission)
+	db.setBackgroundErr("wal", os.ErrPermission)
 	err = db.Put([]byte("k"), []byte("v"))
 	if err == nil {
-		t.Fatal("expected Put to fail during background error")
+		t.Fatal("expected Put to fail during WAL background error")
 	}
 }
 

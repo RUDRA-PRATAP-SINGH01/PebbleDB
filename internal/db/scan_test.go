@@ -174,3 +174,35 @@ func TestScanAfterFlushAndCompact(t *testing.T) {
 		t.Fatalf("k = %q, want v2", got["k"])
 	}
 }
+
+func TestScanIsPointInTimeSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.Put([]byte("seen"), []byte("before")); err != nil {
+		t.Fatal(err)
+	}
+
+	it, err := db.Scan(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Put([]byte("unseen"), []byte("after")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := collectScan(t, it)
+	it.Close()
+
+	if _, ok := got["unseen"]; ok {
+		t.Fatal("writes after Scan should not appear in iterator")
+	}
+	if got["seen"] != "before" {
+		t.Fatalf("seen = %q, want before", got["seen"])
+	}
+}

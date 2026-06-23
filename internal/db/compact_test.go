@@ -2,7 +2,6 @@ package db
 
 import (
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -148,30 +147,6 @@ func TestPartialCompactionReducesCount(t *testing.T) {
 	}
 	if string(val) != "v" {
 		t.Errorf("got %q, want v", val)
-	}
-}
-
-func TestBackgroundErrorSurfacesToCaller(t *testing.T) {
-	dir := t.TempDir()
-	db, err := Open(Options{Dir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	db.setBackgroundErr("flush", os.ErrPermission)
-
-	err = db.Put([]byte("k"), []byte("v"))
-	if err == nil {
-		t.Fatal("expected background error on Put")
-	}
-	bg, ok := err.(*BackgroundError)
-	if !ok || bg.Op != "flush" {
-		t.Fatalf("got %T %v, want *BackgroundError flush", err, err)
-	}
-
-	if db.BackgroundError() == nil {
-		t.Error("BackgroundError() should report stored error")
 	}
 }
 

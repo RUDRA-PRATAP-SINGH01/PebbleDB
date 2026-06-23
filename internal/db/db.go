@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/manifest"
@@ -46,7 +45,7 @@ type DB struct {
 	compactThreshold int
 	walLimits  wal.ReplayLimits
 	blockCache *sstable.BlockCache
-	bgErr      atomic.Pointer[BackgroundError]
+	bgErrs     *backgroundErrStore
 
 	// Group commit: batch WAL appends and fsync once per batch.
 	pendingBatch   []wal.Record
@@ -64,11 +63,15 @@ type flushQueueEntry struct {
 
 // Options control database behaviour.
 type Options struct {
-	Dir                   string
-	MemtableSize int64 // bytes; 0 uses default (4MB)
-	CompactionThreshold   int   // SSTable count before compaction; 0 uses default (4)
-	WALReplayLimits       wal.ReplayLimits
-	BlockCacheSize        int64 // bytes; 0 uses default (32 MiB); negative disables caching
+	Dir string
+	// MemtableSize is the active memtable size in bytes before flush; 0 uses 4 MiB.
+	MemtableSize int64
+	// CompactionThreshold is the live SSTable count that triggers compaction.
+	// 0 uses the default (4). Set to -1 to disable background compaction.
+	CompactionThreshold int
+	WALReplayLimits     wal.ReplayLimits
+	// BlockCacheSize is the SST block cache in bytes; 0 uses 32 MiB; negative disables caching.
+	BlockCacheSize int64
 }
 
 // Open opens or creates a database at the given directory.
@@ -103,6 +106,7 @@ func Open(opts Options) (*DB, error) {
 		compactThreshold: compactThreshold,
 		walLimits:        walLimits,
 		blockCache:       blockCache,
+		bgErrs:           newBackgroundErrStore(),
 		flushCh:          make(chan struct{}, 8),
 		flushDone:        make(chan struct{}),
 		compactCh:        make(chan struct{}, 8),
@@ -222,19 +226,6 @@ func (db *DB) loadSSTables() error {
 	return nil
 }
 
-func (db *DB) setBackgroundErr(op string, err error) {
-	if err == nil {
-		return
-	}
-	db.bgErr.Store(&BackgroundError{Op: op, Err: err})
-}
-
-func (db *DB) clearBackgroundErrOp(op string) {
-	if p := db.bgErr.Load(); p != nil && p.Op == op {
-		db.bgErr.Store(nil)
-	}
-}
-
 func (db *DB) trackReader(r *sstable.Reader) {
 	if r == nil {
 		return
@@ -253,14 +244,7 @@ func (db *DB) discardAllReaders() {
 	db.readersMu.Unlock()
 }
 
-func (db *DB) backgroundErr() error {
-	if p := db.bgErr.Load(); p != nil {
-		return p
-	}
-	return nil
-}
-
-// BackgroundError returns the most recent background flush or compaction error, if any.
+// BackgroundError returns all recorded background flush, compaction, and WAL errors.
 func (db *DB) BackgroundError() error {
 	return db.backgroundErr()
 }

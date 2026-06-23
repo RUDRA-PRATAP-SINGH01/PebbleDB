@@ -19,6 +19,9 @@ const (
 // Get retrieves the value for a key. Returns ErrNotFound if key does not exist
 // or is a tombstone.
 func (db *DB) Get(key []byte) ([]byte, error) {
+	if err := db.blockingBackgroundErr(); err != nil {
+		return nil, err
+	}
 	if err := db.flushPendingBatch(); err != nil {
 		return nil, err
 	}

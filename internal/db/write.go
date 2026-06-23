@@ -3,7 +3,7 @@ package db
 import "github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/wal"
 
 func (db *DB) writeRecord(rec wal.Record) error {
-	if err := db.backgroundErr(); err != nil {
+	if err := db.blockingBackgroundErr(); err != nil {
 		return err
 	}
 

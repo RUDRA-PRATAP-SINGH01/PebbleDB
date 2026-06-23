@@ -90,8 +90,16 @@ func (it *ScanIterator) Close() error {
 
 // Scan returns an iterator over keys in the half-open range [start, end).
 // A nil or empty end scans to the last key.
-// Memtable layers are snapshotted (copy-on-read) so writes are not blocked.
+//
+// The iterator is a point-in-time snapshot captured when Scan returns. Memtable
+// layers are copied via Snapshot() and SSTable iterators are pinned at creation
+// time, so writes and flushes that occur after Scan are not visible. Tombstones
+// are omitted from iteration. Use Get for a live read of a single key, or call
+// Scan again to observe newer data.
 func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
+	if err := db.blockingBackgroundErr(); err != nil {
+		return nil, err
+	}
 	if err := db.flushPendingBatch(); err != nil {
 		return nil, err
 	}
