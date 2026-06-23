@@ -1,30 +1,30 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
-	}
+	fs := flag.NewFlagSet("pebbledb", flag.ExitOnError)
+	dir := fs.String("dir", envOr("PEBBLEDB_DIR", "./pebbledb-data"), "database directory")
+	syncWrites := fs.Bool("sync-writes", envBool("PEBBLEDB_SYNC_WRITES"), "fsync WAL before each Put/Delete returns")
+	_ = fs.Parse(os.Args[1:])
 
-	dir := envOr("PEBBLEDB_DIR", "./pebbledb-data")
-	args := os.Args[1:]
-	if args[0] == "-dir" && len(args) >= 2 {
-		dir = args[1]
-		args = args[2:]
-	}
+	args := fs.Args()
 	if len(args) == 0 {
 		usage()
 		os.Exit(1)
 	}
 
-	database, err := db.Open(db.Options{Dir: dir})
+	database, err := db.Open(db.Options{
+		Dir:        *dir,
+		SyncWrites: *syncWrites,
+	})
 	if err != nil {
 		fatal(err)
 	}
@@ -55,6 +55,13 @@ func main() {
 			fatal(fmt.Errorf("usage: pebbledb delete <key>"))
 		}
 		if err := database.Delete([]byte(args[1])); err != nil {
+			fatal(err)
+		}
+	case "sync":
+		if len(args) != 1 {
+			fatal(fmt.Errorf("usage: pebbledb sync"))
+		}
+		if err := database.Sync(); err != nil {
 			fatal(err)
 		}
 	case "scan":
@@ -90,13 +97,25 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `PebbleDB CLI
 
 Usage:
-  pebbledb [-dir <path>] put <key> <value>
-  pebbledb [-dir <path>] get <key>
-  pebbledb [-dir <path>] delete <key>
-  pebbledb [-dir <path>] scan [start] [end]
+  pebbledb [flags] put <key> <value>
+  pebbledb [flags] get <key>
+  pebbledb [flags] delete <key>
+  pebbledb [flags] sync
+  pebbledb [flags] scan [start] [end]
+
+Flags:
+  -dir string
+        database directory (default ./pebbledb-data or PEBBLEDB_DIR)
+  -sync-writes
+        fsync WAL before each Put/Delete returns (default false)
 
 Environment:
-  PEBBLEDB_DIR  default database directory (./pebbledb-data)
+  PEBBLEDB_DIR           default database directory
+  PEBBLEDB_SYNC_WRITES   set to 1, true, or yes to enable -sync-writes
+
+Durability:
+  By default Put/Delete use group commit (async WAL fsync). Call sync after
+  writes that must survive crash, or pass -sync-writes for synchronous mode.
 `)
 }
 
@@ -105,6 +124,16 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envBool(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func fatal(err error) {

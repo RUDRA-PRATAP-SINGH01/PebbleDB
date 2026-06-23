@@ -199,10 +199,12 @@ A database directory looks like this after some use:
 
 ```
 pebbledb-data/
+├── LOCK                    # exclusive open lock (flock)
 ├── CURRENT                 # single line: active manifest filename
 ├── MANIFEST-000001         # append-only log of live SST set edits
 ├── wal.log                 # write-ahead log
 ├── wal.flush               # transient checkpoint during flush (usually absent)
+├── quarantine/             # orphan SST files moved here on open (if any)
 ├── sst_00000001.sst
 ├── sst_00000002.sst
 └── ...
@@ -260,34 +262,41 @@ cmd/pebbledb → db → {wal, memtable, sstable, manifest, iterator}
 | Background compaction | `db`, `sstable` | Merge oldest 2 SSTs when count >= threshold |
 | Manifest live set | `manifest` | NewFile + SetFileSet records |
 | Manifest rotation | `manifest` | Compact log when > 64 records or 64 KiB |
-| Orphan SST cleanup | `db` | Delete disk files not in manifest on open |
+| Orphan SST quarantine | `db` | Move disk files not in manifest to `quarantine/` on open |
+| Directory lock | `db` | Exclusive `LOCK` file prevents multi-process open |
+| `Sync()` API | `db` | Explicit WAL fsync barrier after async puts |
+| `SyncWrites` option | `db` | Per-write synchronous durability |
 | Crash recovery tests | `db` | Subprocess crash points at flush/compaction stages |
-| Background error API | `db` | Writes blocked on flush/compaction failure; reads continue |
-| CLI | `cmd/pebbledb` | put, get, delete, scan |
+| Background error API | `db` | WAL/flush errors block writes; reads continue from SST/memtable |
+| CLI | `cmd/pebbledb` | put, get, delete, scan, sync |
 | Reader Ref/Unref | `sstable` | Safe concurrent Get during compaction |
-| Close with timeout | `db` | 30s flush drain timeout |
+| Close incomplete guard | `db` | Abort teardown on flush/worker timeout (`ErrCloseIncomplete`) |
 
 ---
 
 ## Write Path (Put / Delete)
 
+### Durability contract
+
+By default PebbleDB uses **group commit**: `Put`/`Delete` queue records in `pendingBatch` and often return before WAL fsync. Call `Sync()` for a crash-safe barrier, or set `Options.SyncWrites = true` for synchronous per-write durability.
+
 ### Algorithm
 
 ```
 writeRecord(rec):
-  if backgroundErr: return error          // writes only
+  if writeBlockingBackgroundErr: return error   // WAL or flush failure
   lock db.mu
   if closed: return ErrClosed
-  wal.Append(rec)
-  wal.Sync()                            // durability point
-  apply() to memtable
-  if active.Size() > threshold:
-      append active to pendingFlush queue
-      active = new SkipList
-      shouldFlush = true
-  unlock db.mu
-  if shouldFlush: signal flusher
+  append rec to pendingBatch
+  schedule batch flusher (1ms timer)
+  if syncWrites OR batch thresholds OR memtable pressure:
+      awaitBatchPersist()    // WAL AppendBatch + fsync, then memtable apply
+  else:
+      return nil             // async — durability not guaranteed yet
+  unlock / return
 ```
+
+Batch thresholds: 64 records, 16 KiB, or memtable size pressure.
 
 ### Flow diagram
 
@@ -295,25 +304,27 @@ writeRecord(rec):
 sequenceDiagram
     participant App
     participant DB as db.mu
+    participant Batch as pendingBatch
+    participant BF as batchFlusher
     participant WAL as wal.log
     participant MT as active memtable
-    participant F as flusher
 
-    App->>DB: Lock
-    App->>WAL: Append(record)
-    App->>WAL: Sync
-    Note over WAL: durability boundary
-    App->>MT: Put / Delete
-    alt memtable size > threshold
-        App->>DB: rotate to pendingFlush
-        App->>F: flushCh signal
+    App->>DB: Lock, append to pendingBatch
+    alt syncWrites or threshold hit
+        App->>BF: awaitBatchPersist
+        BF->>WAL: AppendBatch + fsync
+        Note over WAL: durability boundary
+        BF->>MT: apply records
+    else async (default)
+        App->>DB: Unlock, return nil
+        BF-->>WAL: AppendBatch + fsync (later)
+        BF-->>MT: apply records
     end
-    App->>DB: Unlock
 ```
 
 ### Design note
 
-I chose **WAL sync before memtable apply**. If the process crashes after WAL sync but before memtable apply, replay restores the record. The opposite order would lose acknowledged writes.
+WAL fsync happens in `flushPendingBatch` **before** memtable apply. If the process crashes after fsync but before memtable apply, replay restores the record. Use `Sync()` or `SyncWrites` when the API return must imply crash durability.
 
 ---
 
@@ -907,14 +918,14 @@ Compaction removes old readers from `sstables` but concurrent `Get` may still ho
 
 ## Background Error Policy
 
-| Operation | Blocked on flush/compaction error? |
-|-----------|-------------------------------------|
-| Put / Delete | Yes |
-| Get | No |
-| Scan | No |
-| BackgroundError() | Returns last error for inspection |
+| Operation | Blocked on WAL error? | Blocked on flush error? | Blocked on compaction error? |
+|-----------|------------------------|-------------------------|------------------------------|
+| Put / Delete | Yes | Yes (default; `BlockWritesOnFlushError`) | No |
+| Get | No | No | No |
+| Scan | No | No | No |
+| BackgroundError() | Returns all recorded errors | | |
 
-I clear background errors scoped by operation: a successful flush clears only `flush` errors, not `compaction` errors.
+Reads continue from memtable and SST layers even when WAL or flush is failing, so existing durable data stays readable.
 
 ```mermaid
 flowchart TD
@@ -933,15 +944,27 @@ flowchart TD
 The `pebbledb` binary wraps the Go API.
 
 ```
-pebbledb [-dir <path>] put <key> <value>
-pebbledb [-dir <path>] get <key>
-pebbledb [-dir <path>] delete <key>
-pebbledb [-dir <path>] scan [start] [end]
+pebbledb [flags] put <key> <value>
+pebbledb [flags] get <key>
+pebbledb [flags] delete <key>
+pebbledb [flags] sync
+pebbledb [flags] scan [start] [end]
+
+Flags:
+  -dir string          database directory (default ./pebbledb-data)
+  -sync-writes         fsync WAL before each Put/Delete returns
 ```
 
-Environment variable `PEBBLEDB_DIR` defaults to `./pebbledb-data`.
+Environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `PEBBLEDB_DIR` | Default database directory |
+| `PEBBLEDB_SYNC_WRITES` | Set to `1`/`true`/`yes` to enable `-sync-writes` |
 
 `get` exits with code 1 when the key is not found.
+
+By default, `put`/`delete` use async group commit. Run `sync` after writes that must survive crash, or pass `-sync-writes`.
 
 Each CLI invocation opens the database, runs one command, and closes. There is no long-lived server mode.
 
@@ -954,7 +977,8 @@ Each CLI invocation opens the database, runs one command, and closes. There is n
 | LSM over B-tree | Fast sequential writes, immutable files | Compaction needed, read amplification |
 | Skip list memtable | Simple concurrent inserts | Approximate size tracking |
 | Single writer lock | Easy correctness | No concurrent Put throughput |
-| WAL sync before memtable | Durability on crash | Latency per write |
+| WAL group commit (default) | High write throughput | `Put` may return before fsync — use `Sync()` or `SyncWrites` |
+| WAL sync before memtable apply | Replay correctness after fsync | Latency when sync is required |
 | Manifest before memory on compaction | Crash-consistent live set | Extra fsync per compaction |
 | Manifest as durability boundary for flush | SST survives WAL cleanup failure | WAL may grow until cleanup succeeds |
 | Oldest-2 compaction | Simple to implement and test | Not optimal write amplification vs leveled |
@@ -986,8 +1010,10 @@ Each CLI invocation opens the database, runs one command, and closes. There is n
 | WAL max file size | 64 MiB | `wal/limits.go` |
 | Max key size | 1 MiB | `wal/limits.go` |
 | Max value size | 16 MiB | `wal/limits.go` |
+| Close incomplete guard | No teardown race on stuck workers | `ErrCloseIncomplete` leaves DB closed but not fully released |
+| Directory lock | Single-writer safety per path | Second process gets `ErrDatabaseLocked` |
 
-`Options` struct overrides `MemtableSize`, `CompactionThreshold`, and `WALReplayLimits`.
+`Options` overrides: `MemtableSize`, `CompactionThreshold`, `WALReplayLimits`, `BlockCacheSize`, `SyncWrites`, `BlockWritesOnFlushError`.
 
 ---
 
@@ -1013,8 +1039,12 @@ go build -o pebbledb.exe .\cmd\pebbledb
 ### Run the CLI
 
 ```bash
-# write
+# write (async by default)
 ./pebbledb put name Alice
+./pebbledb sync
+
+# synchronous writes
+./pebbledb -sync-writes put name Alice
 
 # read
 ./pebbledb get name
@@ -1099,7 +1129,7 @@ PebbleDB is a complete educational LSM implementation. I trust it for learning, 
 - **Single writer**: all puts serialize on `db.mu`
 - **No block cache**: every SST read goes to disk
 - **Simple compaction**: oldest-2 merge only, no leveled compaction
-- **Single process**: opening the same directory from two processes is unsafe
+- **Single process per directory**: enforced via `LOCK` file; second open returns `ErrDatabaseLocked`
 - **CLI only**: no server, no HTTP, no gRPC
 
 The codebase has no external dependencies beyond the Go standard library. Every package has unit tests, `internal/db` has integration and crash recovery tests, and the race detector passes on my machine.
