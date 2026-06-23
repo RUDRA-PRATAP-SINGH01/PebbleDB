@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant Put as Put path
+    participant Q as pendingFlush
+    participant F as flusher
+    participant SST as sst file
+    participant M as manifest
+    participant MEM as sstables slice
+    participant WS as wal.flush
+    participant W as wal.log
+
+    Put->>Q: freeze active memtable + walCutoff
+    Put->>F: signal flushCh
+    F->>Q: pop head entry
+    F->>SST: write sorted entries (.tmp → rename)
+    F->>M: AppendNewFile + fsync
+    Note over M: durability boundary for flush
+    F->>MEM: append Reader
+    F->>WS: write FreezeOffset + SSTID + fsync
+    F->>W: TruncateBefore(FreezeOffset)
+    F->>WS: remove wal.flush
+    F->>F: maybeTriggerCompaction

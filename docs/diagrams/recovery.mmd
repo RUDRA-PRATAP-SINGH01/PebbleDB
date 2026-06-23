@@ -1,0 +1,15 @@
+flowchart TD
+    A["Open(dir)"] --> B["acquire LOCK file"]
+    B --> C["manifest.Open + replay live set"]
+    C --> D["load SST readers from manifest"]
+    D --> E["quarantine orphan sst_* not in manifest"]
+    E --> F{"wal.flush exists?"}
+    F -->|yes| G["compute replay offset"]
+    F -->|no| H["replay from 0"]
+    G --> I{"SSTID in manifest AND wal.size >= FreezeOffset?"}
+    I -->|yes| J["replay from FreezeOffset"]
+    I -->|wal truncated below freeze| H
+    J --> K["apply records to active memtable"]
+    H --> K
+    K --> L["wal.OpenWithLimits"]
+    L --> M["start batchFlusher + flusher + compactor"]

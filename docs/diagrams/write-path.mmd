@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant App
+    participant DB as db.writeRecord
+    participant Batch as pendingBatch
+    participant BF as batchFlusher
+    participant WAL as wal.log
+    participant MT as active memtable
+    participant FL as flusher
+
+    App->>DB: Put / Delete
+    DB->>DB: check background WAL/flush errors
+    DB->>Batch: append record
+    alt SyncWrites or batch threshold or memtable pressure
+        DB->>BF: awaitBatchPersist
+        BF->>WAL: AppendBatch + fsync
+        Note over WAL: durability boundary (sync path)
+        BF->>MT: apply batch
+    else default async group commit
+        DB-->>App: return nil (may be pre-fsync)
+        BF-->>WAL: AppendBatch + fsync (later, ~1ms)
+        BF-->>MT: apply batch
+    end
+    MT->>FL: maybeFlushLocked if size exceeded
+    FL->>FL: queue memtable, signal flusher

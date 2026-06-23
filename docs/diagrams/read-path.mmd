@@ -1,0 +1,22 @@
+flowchart TD
+    START["Get(key)"] --> RLOCK["db.mu RLock"]
+    RLOCK --> ACTIVE{"active memtable?"}
+    ACTIVE -->|hit value| RET1["return value"]
+    ACTIVE -->|tombstone| NF1["ErrNotFound"]
+    ACTIVE -->|miss| PEND{"pendingFlush newest→oldest"}
+    PEND -->|hit| RET2["return value"]
+    PEND -->|tombstone| NF2["ErrNotFound"]
+    PEND -->|miss| PENDING{"pendingBatch (unflushed WAL)?"}
+    PENDING -->|hit| RET3["return value"]
+    PENDING -->|miss| REF["copy sstables + Ref readers"]
+    REF --> RUNLOCK["db.mu RUnlock"]
+    RUNLOCK --> SST{"each SST newest→oldest"}
+    SST --> BLOOM{"bloom MayContain?"}
+    BLOOM -->|no| SST
+    BLOOM -->|yes| BLOCK["index → block search"]
+    BLOCK -->|found| RET4["return value"]
+    BLOCK -->|tombstone| NF3["ErrNotFound"]
+    BLOCK -->|miss| SST
+    SST -->|exhausted| NF4["ErrNotFound"]
+    RET4 --> UNREF["defer Unref readers"]
+    NF4 --> UNREF

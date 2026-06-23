@@ -1,0 +1,17 @@
+flowchart TD
+    subgraph CrashPoints["PEBBLEDB_CRASH_AT injection points"]
+        CP1["flush_after_manifest"]
+        CP2["flush_after_wal_state"]
+        CP3["flush_after_wal_truncate"]
+        CP4["compact_after_manifest"]
+        CP5["compact_after_delete_old"]
+    end
+
+    subgraph Parent["Parent test process"]
+        RUN["runCrashSubprocess exit code 2"]
+        REOPEN["Open same directory"]
+        VERIFY["Get/Scan assertions"]
+    end
+
+    CrashPoints --> RUN
+    RUN --> REOPEN --> VERIFY

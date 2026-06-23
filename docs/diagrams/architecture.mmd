@@ -1,0 +1,57 @@
+flowchart TB
+    subgraph Client["Client"]
+        CLI["cmd/pebbledb"]
+        LIB["internal/db API"]
+    end
+
+    subgraph Memory["In-memory LSM state"]
+        ACTIVE["active memtable"]
+        PENDING["pendingFlush queue"]
+        SSTLIST["sstables[] + atomic snapshot"]
+    end
+
+    subgraph Workers["Background workers"]
+        BATCH["batchFlusher"]
+        FLUSH["flusher"]
+        COMPACT["compactor"]
+    end
+
+    subgraph Packages["Engine packages"]
+        WAL["internal/wal"]
+        MT["internal/memtable"]
+        SST["internal/sstable"]
+        MAN["internal/manifest"]
+        IT["internal/iterator"]
+        BLM["internal/bloom"]
+    end
+
+    subgraph Disk["On disk"]
+        LOCK["LOCK"]
+        WALF["wal.log"]
+        WALST["wal.flush"]
+        CUR["CURRENT"]
+        MANF["MANIFEST-*"]
+        SSTF["sst_*.sst"]
+        Q["quarantine/"]
+    end
+
+    CLI --> LIB
+    LIB --> ACTIVE
+    LIB --> WAL
+    BATCH --> WAL
+    BATCH --> ACTIVE
+    FLUSH --> PENDING
+    FLUSH --> SST
+    FLUSH --> MAN
+    FLUSH --> WAL
+    COMPACT --> SST
+    COMPACT --> MAN
+    WAL --> WALF
+    WAL --> WALST
+    MAN --> MANF
+    MAN --> CUR
+    SST --> SSTF
+    SST --> BLM
+    LIB --> IT
+    LIB --> LOCK
+    LIB --> Q

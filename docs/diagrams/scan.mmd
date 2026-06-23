@@ -1,0 +1,24 @@
+flowchart LR
+    subgraph Create["Scan() creation — point-in-time"]
+        A["active.Snapshot()"]
+        P["pendingFlush[i].Snapshot()"]
+        S["SST iterators + Ref"]
+    end
+
+    subgraph Merge["MergeIterator"]
+        MK["min key across sources"]
+        PR["highest priority wins"]
+        TS["skip tombstones"]
+    end
+
+    subgraph Priorities["Priority (newer wins)"]
+        P1["active: 1_000_000"]
+        P2["pending[i]: 999_999 - i"]
+        P3["sstables[i]: i"]
+    end
+
+    A --> Merge
+    P --> Merge
+    S --> Merge
+    Priorities --> PR
+    Merge --> OUT["keys in [start,end)"]

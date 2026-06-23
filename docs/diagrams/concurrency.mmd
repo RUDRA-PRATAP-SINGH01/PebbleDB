@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph Writers["Write path"]
+        W1["Put/Delete"] --> W2["db.mu Lock"]
+        W2 --> W3["pendingBatch + memtable"]
+    end
+
+    subgraph PointReads["Get path"]
+        G1["db.mu RLock brief"] --> G2["lookup memtables + Ref SSTs"]
+        G2 --> G3["RUnlock, read SSTs without db.mu"]
+        G3 --> G4["Unref on return"]
+    end
+
+    subgraph Scans["Scan path"]
+        S1["db.mu RLock brief"] --> S2["memtable.Snapshot copies"]
+        S2 --> S3["merge iterate, no db.mu held"]
+    end
+
+    subgraph Background["Background"]
+        BF["batchFlusher — WAL batch fsync"]
+        FG["flusher — pendingFlush drain"]
+        CG["compactor — compactMu serializes"]
+    end
+
+    W3 -.->|flush signal| FG
+    FG -.->|maybe compact| CG

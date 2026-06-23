@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph Records["Manifest records"]
+        NF["NewFile(sst_id)"]
+        SF["SetFileSet(sorted ids)"]
+    end
+
+    subgraph Append["Normal path"]
+        FLUSH["flush completes"] --> NF
+        COMPACT["compaction completes"] --> SF
+    end
+
+    subgraph Rotate["MaybeCompact"]
+        GROW["record count >= 64 OR size >= 64KiB"]
+        GROW --> SNAP["write new MANIFEST file with single SetFileSet"]
+        SNAP --> CUR["atomic CURRENT rename"]
+    end
+
+    NF --> GROW
+    SF --> GROW

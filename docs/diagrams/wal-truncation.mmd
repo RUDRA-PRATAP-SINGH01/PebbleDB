@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant F as flushImmutable
+    participant M as manifest
+    participant WS as wal.flush
+    participant W as WAL
+
+    F->>M: AppendNewFile (durable SST)
+    F->>WS: write FreezeOffset + SSTID (.tmp → rename, fsync)
+    Note over WS: crash window: SST durable, WAL still full
+    F->>W: Sync original file
+    F->>W: copy tail to wal.truncate.tmp
+    F->>W: fsync tmp, close handles
+    F->>W: atomic rename replaces wal.log
+    F->>WS: remove wal.flush
+    Note over W: crash after truncate: replay from 0 if size < FreezeOffset

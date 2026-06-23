@@ -1,0 +1,26 @@
+sequenceDiagram
+    participant App
+    participant DB as Close()
+    participant BF as batchFlusher
+    participant F as flusher
+    participant C as compactor
+    participant W as wal
+    participant M as manifest
+
+    App->>DB: Close()
+    DB->>DB: closed=true, stop batch timer
+    DB->>BF: stop + flush pendingBatch
+    loop until active empty and queue drained
+        DB->>F: queue active / notifyFlushForce
+        DB->>DB: waitForPendingFlushDrain (30s)
+    end
+    alt drain or worker timeout
+        DB-->>App: ErrCloseIncomplete (WAL/manifest left open)
+    else success path
+        DB->>F: close flushCh, wait flushDone
+        DB->>C: close compactCh, wait compactDone
+        DB->>DB: discardAllReaders
+        DB->>W: Sync + Close
+        DB->>M: Close
+        DB->>DB: release LOCK
+    end

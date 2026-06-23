@@ -1,0 +1,13 @@
+flowchart TD
+    T["len(sstables) >= threshold"] --> SIGNAL["compactCh signal"]
+    SIGNAL --> LOCK["compactMu.Lock"]
+    LOCK --> PICK["pick 2 oldest SST readers"]
+    PICK --> MERGE["merge into new SST (tombstones kept)"]
+    MERGE --> MAN["manifest SetFileSet + fsync"]
+    Note1["manifest before in-memory swap"]
+    MAN --> SWAP["replace sstables slice"]
+    SWAP --> DISCARD["Discard old readers when refs=0"]
+    DISCARD --> DEL["delete old sst files"]
+    DEL --> MORE{"still >= threshold?"}
+    MORE -->|yes| PICK
+    MORE -->|no| UNLOCK["compactMu.Unlock"]

@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph File["sst_NNNNNNNN.sst"]
+        B0["Block 0 — sorted KV entries"]
+        B1["Block 1"]
+        BN["Block N"]
+        IDX["Index block — last key per block"]
+        BLM["Bloom filter blob"]
+        FT["Footer 48 bytes"]
+    end
+
+    subgraph FooterFields["Footer v2"]
+        IO["index offset/len"]
+        BO["bloom offset/len"]
+        VER["version = 2"]
+        MAG["magic 0x88e241b3"]
+    end
+
+    B0 --> B1 --> BN --> IDX --> BLM --> FT
+    FT --> FooterFields
+
+    subgraph Entry["Block entry"]
+        E1["keyLen | key | valueLen | value | tombstone(1)"]
+    end
+
+    B0 --- Entry
