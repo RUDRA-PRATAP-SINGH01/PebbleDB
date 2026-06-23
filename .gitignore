@@ -1,0 +1,6 @@
+pebbledb
+pebbledb.exe
+*.sst
+pebbledb-data/
+_flushtest/
+data/

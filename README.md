@@ -1104,3 +1104,8 @@ PebbleDB is a complete educational LSM implementation. I trust it for learning, 
 
 The codebase has no external dependencies beyond the Go standard library. Every package has unit tests, `internal/db` has integration and crash recovery tests, and the race detector passes on my machine.
 
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
