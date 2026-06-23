@@ -45,8 +45,10 @@ func (db *DB) Close() error {
 
 	for {
 		var needFlush bool
+		var hasPending bool
 		db.mu.Lock()
-		if !db.hasPendingFlush() && db.active.Size() <= 0 {
+		hasPending = db.hasPendingFlush()
+		if !hasPending && db.active.Size() <= 0 {
 			db.mu.Unlock()
 			break
 		}
@@ -55,7 +57,7 @@ func (db *DB) Close() error {
 			if err != nil {
 				db.mu.Unlock()
 				closeErr = errors.Join(closeErr, err)
-				return errors.Join(closeErr, ErrCloseIncomplete)
+				return db.abortClose(closeErr)
 			}
 			db.pendingFlush = append(db.pendingFlush, flushQueueEntry{
 				mem:       db.active,
@@ -63,20 +65,21 @@ func (db *DB) Close() error {
 			})
 			db.active = memtable.NewSkipList()
 			needFlush = true
+			hasPending = true
 		}
 		db.mu.Unlock()
 
-		if needFlush {
+		if needFlush || hasPending {
 			db.notifyFlushForce()
 		}
 		if err := db.waitForPendingFlushDrain(closeFlushDrainTimeout); err != nil {
 			closeErr = errors.Join(closeErr, err)
-			return errors.Join(closeErr, ErrCloseIncomplete)
+			return db.abortClose(closeErr)
 		}
 	}
 
 	if err := db.shutdownBackgroundWorkers(); err != nil {
-		return errors.Join(closeErr, err, ErrCloseIncomplete)
+		return db.abortClose(errors.Join(closeErr, err))
 	}
 
 	db.mu.Lock()
@@ -94,6 +97,15 @@ func (db *DB) Close() error {
 		db.manifest = nil
 	}
 	return closeErr
+}
+
+// abortClose stops background workers but leaves WAL/manifest open so callers
+// never tear down resources while flusher/compactor goroutines are still running.
+func (db *DB) abortClose(err error) error {
+	if shutdownErr := db.shutdownBackgroundWorkers(); shutdownErr != nil {
+		err = errors.Join(err, shutdownErr)
+	}
+	return errors.Join(err, ErrCloseIncomplete)
 }
 
 func (db *DB) shutdownBackgroundWorkers() error {

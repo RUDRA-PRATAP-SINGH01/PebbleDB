@@ -68,7 +68,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 	}()
 
-	return runCommand(database, cmdArgs, stdout)
+	return runCommand(database, cmdArgs, stdout, stderr)
 }
 
 func parseCLI(args []string, stderr io.Writer) (cliConfig, []string, error) {
@@ -91,7 +91,7 @@ func parseCLI(args []string, stderr io.Writer) (cliConfig, []string, error) {
 	return cfg, fs.Args(), nil
 }
 
-func runCommand(database *db.DB, args []string, stdout io.Writer) error {
+func runCommand(database *db.DB, args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "put":
 		if len(args) != 3 {
@@ -102,12 +102,12 @@ func runCommand(database *db.DB, args []string, stdout io.Writer) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: pebbledb get <key>")
 		}
-		val, err := database.Get([]byte(args[1]))
-		if errors.Is(err, db.ErrNotFound) {
+		val, getErr := database.Get([]byte(args[1]))
+		if errors.Is(getErr, db.ErrNotFound) {
 			return &exitCodeError{code: 1, msg: "key not found"}
 		}
-		if err != nil {
-			return err
+		if getErr != nil {
+			return getErr
 		}
 		fmt.Fprintln(stdout, string(val))
 		return nil
@@ -133,24 +133,24 @@ func runCommand(database *db.DB, args []string, stdout io.Writer) error {
 		default:
 			return fmt.Errorf("usage: pebbledb scan [start] [end]")
 		}
-		it, err := database.Scan(start, end)
-		if err != nil {
-			return err
+		it, scanErr := database.Scan(start, end)
+		if scanErr != nil {
+			return scanErr
 		}
 		defer func() {
 			if closeErr := it.Close(); closeErr != nil {
-				fmt.Fprintf(os.Stderr, "error: scan close: %v\n", closeErr)
+				fmt.Fprintf(stderr, "error: scan close: %v\n", closeErr)
 			}
 		}()
 		for it.Valid() {
 			fmt.Fprintf(stdout, "%s\t%s\n", it.Key(), it.Value())
-			if err := it.Next(); err != nil {
-				return err
+			if nextErr := it.Next(); nextErr != nil {
+				return nextErr
 			}
 		}
 		return nil
 	default:
-		printUsage(os.Stderr)
+		printUsage(stderr)
 		return &exitCodeError{code: 1, msg: fmt.Sprintf("unknown command %q", args[0])}
 	}
 }

@@ -5,8 +5,6 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
 )
 
 func TestClearBackgroundErrOpIsScoped(t *testing.T) {
@@ -199,11 +197,7 @@ func TestCompactionDisabledWithNegativeThreshold(t *testing.T) {
 	}
 }
 
-func TestCloseReturnsIncompleteWhenFlushStuck(t *testing.T) {
-	oldTimeout := closeFlushDrainTimeout
-	closeFlushDrainTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { closeFlushDrainTimeout = oldTimeout })
-
+func TestCloseIncompleteWhenWalSizeFails(t *testing.T) {
 	dir := t.TempDir()
 	database, err := Open(Options{Dir: dir, CompactionThreshold: 1000})
 	if err != nil {
@@ -211,30 +205,19 @@ func TestCloseReturnsIncompleteWhenFlushStuck(t *testing.T) {
 	}
 
 	database.mu.Lock()
-	database.pendingFlush = append(database.pendingFlush, flushQueueEntry{
-		mem:       memtable.NewSkipList(),
-		walCutoff: 0,
-	})
+	database.active.Put([]byte("pending"), []byte("data"))
 	database.mu.Unlock()
 
-	done := make(chan error, 1)
-	go func() {
-		done <- database.Close()
-	}()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrCloseIncomplete) {
-			t.Fatalf("Close() = %v, want ErrCloseIncomplete", err)
-		}
-		if database.manifest == nil {
-			t.Fatal("manifest should remain open after incomplete close")
-		}
-		_ = database.manifest.Close()
-		if database.wal != nil {
-			_ = database.wal.Close()
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Close() blocked past flush drain timeout")
+	if err := database.wal.Close(); err != nil {
+		t.Fatal(err)
 	}
+
+	closeErr := database.Close()
+	if !errors.Is(closeErr, ErrCloseIncomplete) {
+		t.Fatalf("Close() = %v, want ErrCloseIncomplete", closeErr)
+	}
+	if database.manifest == nil {
+		t.Fatal("manifest should remain open after incomplete close")
+	}
+	_ = database.manifest.Close()
 }
