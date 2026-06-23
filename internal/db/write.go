@@ -27,12 +27,13 @@ func (db *DB) writeRecord(rec wal.Record) error {
 		return nil
 	}
 
-	batch := append([]wal.Record(nil), db.pendingBatch...)
-	db.pendingBatch = db.pendingBatch[:0]
-	db.batchSizeBytes = 0
+	batch := takePendingBatchLocked(db)
 	db.mu.Unlock()
 
 	if err := db.wal.AppendBatch(batch); err != nil {
+		db.mu.Lock()
+		restorePendingBatchLocked(db, batch)
+		db.mu.Unlock()
 		db.setBackgroundErr("wal", err)
 		return err
 	}

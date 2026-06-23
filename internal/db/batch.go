@@ -35,6 +35,27 @@ func applyRecordToMemtable(db *DB, rec wal.Record) {
 	}
 }
 
+// takePendingBatchLocked moves the current WAL batch out of the queue.
+// db.mu must be held.
+func takePendingBatchLocked(db *DB) []wal.Record {
+	if len(db.pendingBatch) == 0 {
+		return nil
+	}
+	batch := append([]wal.Record(nil), db.pendingBatch...)
+	db.pendingBatch = db.pendingBatch[:0]
+	db.batchSizeBytes = 0
+	return batch
+}
+
+// restorePendingBatchLocked prepends a failed WAL batch back onto the queue.
+// db.mu must be held.
+func restorePendingBatchLocked(db *DB, batch []wal.Record) {
+	db.pendingBatch = append(batch, db.pendingBatch...)
+	for _, rec := range batch {
+		db.batchSizeBytes += recordWireSize(rec)
+	}
+}
+
 func (db *DB) scheduleBatchFlushLocked() {
 	if db.batchTimer == nil {
 		db.batchTimer = time.AfterFunc(batchFlushDelay, func() {
@@ -80,12 +101,13 @@ func (db *DB) flushPendingBatch() error {
 		db.mu.Unlock()
 		return nil
 	}
-	batch := append([]wal.Record(nil), db.pendingBatch...)
-	db.pendingBatch = db.pendingBatch[:0]
-	db.batchSizeBytes = 0
+	batch := takePendingBatchLocked(db)
 	db.mu.Unlock()
 
 	if err := db.wal.AppendBatch(batch); err != nil {
+		db.mu.Lock()
+		restorePendingBatchLocked(db, batch)
+		db.mu.Unlock()
 		db.setBackgroundErr("wal", err)
 		return err
 	}

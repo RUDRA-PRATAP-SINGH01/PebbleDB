@@ -1,6 +1,9 @@
 package db
 
 import (
+	"errors"
+	"os"
+
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/sstable"
 )
@@ -55,22 +58,41 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 		}
 	}()
 
+	val, found, err := lookupSSTReaders(readers, key)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		if val == nil {
+			return nil, ErrNotFound
+		}
+		return val, nil
+	}
+	return nil, ErrNotFound
+}
+
+// lookupSSTReaders searches SSTable readers newest-first. Closed readers are
+// skipped so in-flight lookups can fall through to older layers.
+func lookupSSTReaders(readers []*sstable.Reader, key []byte) (value []byte, found bool, err error) {
 	for i := len(readers) - 1; i >= 0; i-- {
 		if !readers[i].MayContain(key) {
 			continue
 		}
-		val, found, tomb, err := readers[i].Get(key)
-		if err != nil {
-			return nil, err
-		}
-		if found {
-			if tomb {
-				return nil, ErrNotFound
+		val, hit, tomb, readErr := readers[i].Get(key)
+		if readErr != nil {
+			if errors.Is(readErr, os.ErrClosed) {
+				continue
 			}
-			return val, nil
+			return nil, false, readErr
+		}
+		if hit {
+			if tomb {
+				return nil, true, nil
+			}
+			return val, true, nil
 		}
 	}
-	return nil, ErrNotFound
+	return nil, false, nil
 }
 
 func lookupMemtable(mt *memtable.SkipList, key []byte) ([]byte, memLookupResult) {

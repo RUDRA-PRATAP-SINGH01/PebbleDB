@@ -8,7 +8,10 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
 )
 
-var closeFlushDrainTimeout = 30 * time.Second
+var (
+	closeFlushDrainTimeout = 30 * time.Second
+	closeWorkerJoinTimeout = 5 * time.Second
+)
 
 // Close flushes pending data and closes the database.
 func (db *DB) Close() error {
@@ -25,6 +28,17 @@ func (db *DB) Close() error {
 	db.mu.Unlock()
 
 	var closeErr error
+	workersShutdown := false
+	shutdownWorkers := func() {
+		if workersShutdown {
+			return
+		}
+		workersShutdown = true
+		if err := db.shutdownBackgroundWorkers(); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
+	defer shutdownWorkers()
 
 	db.stopBatchFlusher()
 	if err := db.flushPendingBatch(); err != nil {
@@ -42,7 +56,8 @@ func (db *DB) Close() error {
 			offset, err := db.wal.Size()
 			if err != nil {
 				db.mu.Unlock()
-				return err
+				closeErr = errors.Join(closeErr, err)
+				break
 			}
 			db.pendingFlush = append(db.pendingFlush, flushQueueEntry{
 				mem:       db.active,
@@ -62,14 +77,6 @@ func (db *DB) Close() error {
 		}
 	}
 
-	close(db.flushCh)
-	<-db.flushDone
-
-	db.compactMu.Lock()
-	close(db.compactCh)
-	db.compactMu.Unlock()
-	<-db.compactDone
-
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	db.sstables = nil
@@ -84,6 +91,32 @@ func (db *DB) Close() error {
 		db.manifest = nil
 	}
 	return closeErr
+}
+
+func (db *DB) shutdownBackgroundWorkers() error {
+	var err error
+
+	close(db.flushCh)
+	if waitErr := waitForChannelClose(db.flushDone, closeWorkerJoinTimeout); waitErr != nil {
+		err = errors.Join(err, waitErr)
+	}
+
+	db.compactMu.Lock()
+	close(db.compactCh)
+	db.compactMu.Unlock()
+	if waitErr := waitForChannelClose(db.compactDone, closeWorkerJoinTimeout); waitErr != nil {
+		err = errors.Join(err, waitErr)
+	}
+	return err
+}
+
+func waitForChannelClose(done <-chan struct{}, timeout time.Duration) error {
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return ErrCloseWorkerTimeout
+	}
 }
 
 func (db *DB) waitForPendingFlushDrain(timeout time.Duration) error {
