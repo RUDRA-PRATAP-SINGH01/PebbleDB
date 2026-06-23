@@ -1,6 +1,11 @@
-pebbledb
-pebbledb.exe
+# Built CLI binaries (root and bin/ only — do not match cmd/pebbledb/)
+/pebbledb
+/pebbledb.exe
+/bin/pebbledb
+/bin/pebbledb.exe
+
 *.sst
 pebbledb-data/
 _flushtest/
 data/
+coverage.out
