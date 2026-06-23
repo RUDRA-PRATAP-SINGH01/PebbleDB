@@ -380,12 +380,6 @@ func (w *WAL) reopenAppendAfterTruncateErr(cause error) error {
 	return cause
 }
 
-func (w *WAL) reopenEmpty() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.reopenEmptyLocked()
-}
-
 func (w *WAL) reopenEmptyLocked() error {
 	if err := w.file.Close(); err != nil {
 		return err

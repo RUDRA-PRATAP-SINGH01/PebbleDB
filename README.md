@@ -947,8 +947,9 @@ The `pebbledb` binary wraps the Go API.
 pebbledb [flags] put <key> <value>
 pebbledb [flags] get <key>
 pebbledb [flags] delete <key>
-pebbledb [flags] sync
-pebbledb [flags] scan [start] [end]
+  pebbledb [flags] sync
+  pebbledb [flags] scan [start] [end]
+  pebbledb help
 
 Flags:
   -dir string          database directory (default ./pebbledb-data)

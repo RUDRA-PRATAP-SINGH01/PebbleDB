@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	modKernel32      = syscall.NewLazyDLL("kernel32.dll")
+	modKernel32        = syscall.NewLazyDLL("kernel32.dll")
 	procLockFileEx     = modKernel32.NewProc("LockFileEx")
 	procUnlockFileEx   = modKernel32.NewProc("UnlockFileEx")
 	lockFileOverlapped syscall.Overlapped

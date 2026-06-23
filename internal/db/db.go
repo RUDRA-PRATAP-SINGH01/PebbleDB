@@ -28,32 +28,32 @@ var sstFilePattern = regexp.MustCompile(`^sst_(\d{8})\.sst$`)
 
 // DB is the main database handle.
 type DB struct {
-	mu               sync.RWMutex
-	dir              string
-	active           *memtable.SkipList
-	pendingFlush     []flushQueueEntry
-	sstables         []*sstable.Reader
-	sstablesSnap     atomic.Pointer[[]*sstable.Reader]
-	wal              *wal.WAL
-	manifest         *manifest.Log
-	closed           bool
-	closedFlag       atomic.Bool
-	flushCh          chan struct{}
-	flushDone        chan struct{}
-	compactCh        chan struct{}
-	compactDone      chan struct{}
-	compactMu        sync.Mutex
-	readersMu        sync.Mutex
-	allReaders       []*sstable.Reader
-	nextSSTID        uint64
-	memtableSize     int64
-	compactThreshold int
-	walLimits        wal.ReplayLimits
-	blockCache       *sstable.BlockCache
-	bgErrs           *backgroundErrStore
-	syncWrites       bool
+	mu                      sync.RWMutex
+	dir                     string
+	active                  *memtable.SkipList
+	pendingFlush            []flushQueueEntry
+	sstables                []*sstable.Reader
+	sstablesSnap            atomic.Pointer[[]*sstable.Reader]
+	wal                     *wal.WAL
+	manifest                *manifest.Log
+	closed                  bool
+	closedFlag              atomic.Bool
+	flushCh                 chan struct{}
+	flushDone               chan struct{}
+	compactCh               chan struct{}
+	compactDone             chan struct{}
+	compactMu               sync.Mutex
+	readersMu               sync.Mutex
+	allReaders              []*sstable.Reader
+	nextSSTID               uint64
+	memtableSize            int64
+	compactThreshold        int
+	walLimits               wal.ReplayLimits
+	blockCache              *sstable.BlockCache
+	bgErrs                  *backgroundErrStore
+	syncWrites              bool
 	blockWritesOnFlushError bool
-	dirLock          *os.File
+	dirLock                 *os.File
 
 	// Group commit: batch WAL appends and fsync once per batch.
 	pendingBatch   []wal.Record
@@ -146,14 +146,14 @@ func Open(opts Options) (*DB, error) {
 		blockWritesOnFlushError: blockWritesOnFlushError,
 		dirLock:                 dirLock,
 		flushCh:                 make(chan struct{}, 8),
-		flushDone:        make(chan struct{}),
-		compactCh:        make(chan struct{}, 8),
-		compactDone:      make(chan struct{}),
-		batchFlushCh:     make(chan struct{}, 1),
-		batchSyncCh:      make(chan chan error, 8),
-		batchStop:        make(chan struct{}),
-		batchDone:        make(chan struct{}),
-		pendingBatch:     make([]wal.Record, 0, batchMaxRecords),
+		flushDone:               make(chan struct{}),
+		compactCh:               make(chan struct{}, 8),
+		compactDone:             make(chan struct{}),
+		batchFlushCh:            make(chan struct{}, 1),
+		batchSyncCh:             make(chan chan error, 8),
+		batchStop:               make(chan struct{}),
+		batchDone:               make(chan struct{}),
+		pendingBatch:            make([]wal.Record, 0, batchMaxRecords),
 	}
 
 	m, err := manifest.Open(opts.Dir)

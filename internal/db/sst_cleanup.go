@@ -5,24 +5,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 func quarantineDir(dir string) string {
 	return filepath.Join(dir, "quarantine")
-}
-
-func removeSSTPath(path string) error {
-	var last error
-	for attempt := 0; attempt < 5; attempt++ {
-		err := os.Remove(path)
-		if err == nil || os.IsNotExist(err) {
-			return nil
-		}
-		last = err
-		time.Sleep(10 * time.Millisecond)
-	}
-	return last
 }
 
 func quarantineSSTPath(src, quarantineRoot string, id uint64) error {
