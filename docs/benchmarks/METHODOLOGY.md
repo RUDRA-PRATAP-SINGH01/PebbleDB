@@ -4,14 +4,14 @@ How I run benchmarks and how to interpret numbers without lying.
 
 ## Environment
 
-Record these when publishing results:
+Last published run: **2026-06-23**, Windows 11, Intel i9-14900HX, Go 1.23.4, local NVMe.
 
 | Setting | Typical value |
 |---------|----------------|
 | Go version | 1.23.4 (`go.mod`) |
-| OS / disk | NVMe vs SATA matters |
-| `GOMAXPROCS` | default vs fixed |
-| `MemtableSize` | 4 MiB default |
+| OS / disk | Windows 11 / NVMe laptop SSD |
+| `GOMAXPROCS` | default (32); RandomRead sets 4 |
+| `MemtableSize` | 4 MiB default; 128 MiB in read/scan preload |
 | `CompactionThreshold` | 100 in benches (compaction held off) |
 | Value size | 128 bytes (`benchPayload`) |
 | Key format | `key-%010d` (14 bytes) |
@@ -30,10 +30,10 @@ go test -bench=BenchmarkScanThroughput -benchmem -count=1 ./internal/db
 
 `-count=1` disables Go test cache — important for filesystem benchmarks.
 
-On PowerShell, quote flags with dots:
+On PowerShell, quote flags with dots and skip unit tests:
 
 ```powershell
-go test "-bench=." -benchmem -count=1 ./internal/db
+go test ./internal/db -run=NonExistent "-bench=." -benchmem -count=1
 ```
 
 ## Async vs sync writes

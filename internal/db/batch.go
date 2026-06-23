@@ -120,7 +120,11 @@ func (db *DB) flushPendingBatch() error {
 		applyRecordToMemtable(db, rec)
 	}
 	shouldFlush, err := db.maybeFlushLocked()
-	db.pendingBatch = batch[:0]
+	// Reuse the flushed slice only when no new records were queued during WAL append.
+	// Otherwise we would drop writes that landed in pendingBatch while fsync ran.
+	if len(db.pendingBatch) == 0 {
+		db.pendingBatch = batch[:0]
+	}
 	db.mu.Unlock()
 	if err != nil {
 		return err

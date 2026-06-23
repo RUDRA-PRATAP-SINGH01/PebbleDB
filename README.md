@@ -222,13 +222,13 @@ CI runs vet, lint, and `go test -race -shuffle=on ./...` on Ubuntu and macOS.
 
 ## Benchmarks
 
-```bash
-go test -bench=. -benchmem -count=1 ./internal/db
+```powershell
+go test ./internal/db -run=NonExistent "-bench=." -benchmem -count=1
 ```
 
-Default write benchmarks use async group commit, not per-key fsync.
+Async group commit on this machine: ~34k–38k puts/sec (128-byte values). Parallel memtable reads: ~3.1M ops/sec at 4 cores.
 
-[docs/benchmarks/METHODOLOGY.md](docs/benchmarks/METHODOLOGY.md)
+[docs/benchmarks/RESULTS.md](docs/benchmarks/RESULTS.md) · [docs/benchmarks/METHODOLOGY.md](docs/benchmarks/METHODOLOGY.md)
 
 ---
 

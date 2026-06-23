@@ -44,6 +44,39 @@ func waitForFlush(t *testing.T, db *DB) {
 		pending, batchPending, sstCount, db.BackgroundError())
 }
 
+func TestRapidPutNoLossDuringAsyncFlush(t *testing.T) {
+	const n = 50_000
+	dir := t.TempDir()
+	db, err := Open(Options{
+		Dir:                 dir,
+		MemtableSize:        128 << 20,
+		CompactionThreshold: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	keys := make([][]byte, n)
+	val := make([]byte, 128)
+	for i := range keys {
+		keys[i] = []byte(fmt.Sprintf("key-%010d", i))
+	}
+	for i := 0; i < n; i++ {
+		if err := db.Put(keys[i], val); err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+	}
+	if err := db.awaitBatchPersist(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < n; i++ {
+		if _, err := db.Get(keys[i]); err != nil {
+			t.Fatalf("key %d: %v", i, err)
+		}
+	}
+}
+
 func TestFlusher(t *testing.T) {
 	testFlushToSSTable(t)
 }

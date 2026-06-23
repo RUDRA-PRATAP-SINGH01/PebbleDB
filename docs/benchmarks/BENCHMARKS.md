@@ -16,6 +16,10 @@ Benchmarks live in `internal/db/bench_test.go`.
 go test -bench=. -benchmem -count=1 ./internal/db
 ```
 
+PowerShell: `go test ./internal/db -run=NonExistent "-bench=." -benchmem -count=1`
+
+Measured results: [RESULTS.md](RESULTS.md)
+
 Do not use `-race` for timing.
 
 ## Durability

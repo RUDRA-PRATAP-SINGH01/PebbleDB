@@ -30,6 +30,45 @@ func makeOrderedKeys(n int) [][]byte {
 	return keys
 }
 
+// benchPreload fills the DB and waits until all records are visible to Get/Scan.
+// Async group commit may leave records in the flusher goroutine after pendingBatch drains.
+func benchPreload(b *testing.B, opts Options, dataset int) (*DB, [][]byte) {
+	b.Helper()
+
+	dir := b.TempDir()
+	opts.Dir = dir
+	if opts.MemtableSize == 0 {
+		opts.MemtableSize = 128 << 20
+	}
+	if opts.CompactionThreshold == 0 {
+		opts.CompactionThreshold = benchCompactionHoldoff
+	}
+
+	db, err := Open(opts)
+	if err != nil {
+		b.Fatalf("open: %v", err)
+	}
+
+	keys := makeOrderedKeys(dataset)
+	val := benchPayload
+	for i := 0; i < dataset; i++ {
+		if err := db.Put(keys[i], val); err != nil {
+			b.Fatalf("put %d: %v", i, err)
+		}
+	}
+	// Route through the batch flusher so in-flight WAL batches finish applying.
+	if err := db.awaitBatchPersist(); err != nil {
+		b.Fatalf("await batch: %v", err)
+	}
+	if _, err := db.Get(keys[0]); err != nil {
+		b.Fatalf("verify first key: %v", err)
+	}
+	if _, err := db.Get(keys[dataset-1]); err != nil {
+		b.Fatalf("verify last key: %v", err)
+	}
+	return db, keys
+}
+
 func reportThroughput(b *testing.B, ops int, bytesPerOp int) {
 	secs := b.Elapsed().Seconds()
 	if secs <= 0 {
@@ -83,44 +122,23 @@ func BenchmarkSequentialWrite(b *testing.B) {
 // BenchmarkRandomRead – runs against memtable only (no close/reopen).
 func BenchmarkRandomRead(b *testing.B) {
 	const dataset = 50_000
-	b.ReportAllocs()
-	b.StopTimer()
 
-	dir := b.TempDir()
-	opts := Options{
-		Dir:                 dir,
-		MemtableSize:        128 << 20, // large enough to hold all keys
-		CompactionThreshold: 100,
-	}
-	db, err := Open(opts)
-	if err != nil {
-		b.Fatalf("open: %v", err)
-	}
+	b.StopTimer()
+	db, keys := benchPreload(b, Options{}, dataset)
 	defer db.Close()
 
-	keys := makeOrderedKeys(dataset)
-	val := benchPayload
-	b.Logf("Preloading %d keys into memtable...", dataset)
-	for i := 0; i < dataset; i++ {
-		if err := db.Put(keys[i], val); err != nil {
-			b.Fatalf("put %d: %v", i, err)
-		}
-	}
-	// No close/reopen – reads come directly from the active memtable.
-
-	b.SetParallelism(4)
-	runtime.GOMAXPROCS(4)
 	bytesPerOp := len(keys[0]) + benchValueLen
 	b.SetBytes(int64(bytesPerOp))
+	b.SetParallelism(4)
+	runtime.GOMAXPROCS(4)
 
-	b.ResetTimer()
+	b.StartTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 		for pb.Next() {
 			k := keys[rng.Intn(len(keys))]
 			if _, err := db.Get(k); err != nil {
-				b.Errorf("get: %v", err)
-				return
+				b.Fatalf("get: %v", err)
 			}
 		}
 	})
@@ -149,29 +167,10 @@ func scanOnce(b *testing.B, db *DB, start, end []byte) int {
 // BenchmarkScanThroughput – runs against memtable only.
 func BenchmarkScanThroughput(b *testing.B) {
 	const dataset = 50_000
-	b.ReportAllocs()
+
 	b.StopTimer()
-
-	dir := b.TempDir()
-	opts := Options{
-		Dir:                 dir,
-		MemtableSize:        128 << 20,
-		CompactionThreshold: 100,
-	}
-	db, err := Open(opts)
-	if err != nil {
-		b.Fatalf("open: %v", err)
-	}
+	db, keys := benchPreload(b, Options{}, dataset)
 	defer db.Close()
-
-	keys := makeOrderedKeys(dataset)
-	val := benchPayload
-	b.Logf("Preloading %d keys into memtable...", dataset)
-	for i := 0; i < dataset; i++ {
-		if err := db.Put(keys[i], val); err != nil {
-			b.Fatalf("put %d: %v", i, err)
-		}
-	}
 
 	start := keys[0]
 	bytesPerEntry := len(keys[0]) + benchValueLen
@@ -185,7 +184,10 @@ func BenchmarkScanThroughput(b *testing.B) {
 		{"50k", 50_000},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
-			end := keys[tc.count]
+			var end []byte
+			if tc.count < dataset {
+				end = keys[tc.count]
+			}
 			b.SetBytes(int64(bytesPerEntry))
 			b.ResetTimer()
 			var total int
