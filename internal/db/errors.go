@@ -7,6 +7,8 @@ import (
 
 var ErrNotFound = errors.New("key not found")
 var ErrClosed = errors.New("database closed")
+var ErrEmptyDir = errors.New("database directory path is empty")
+var ErrCorruptWalFlushState = errors.New("wal.flush: corrupt or truncated state file")
 var ErrCloseFlushTimeout = errors.New("close: timed out waiting for flush to complete")
 var ErrCloseWorkerTimeout = errors.New("close: timed out waiting for background workers to stop")
 

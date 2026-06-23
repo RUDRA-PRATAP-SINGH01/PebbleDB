@@ -50,17 +50,11 @@ func (m *MergeIterator) Valid() bool {
 }
 
 func (m *MergeIterator) Key() []byte {
-	if m.key == nil {
-		return nil
-	}
-	return append([]byte(nil), m.key...)
+	return m.key
 }
 
 func (m *MergeIterator) Value() []byte {
-	if m.value == nil {
-		return nil
-	}
-	return append([]byte(nil), m.value...)
+	return m.value
 }
 
 func (m *MergeIterator) IsTombstone() bool {
@@ -132,8 +126,12 @@ func (m *MergeIterator) advance() error {
 			continue
 		}
 
-		m.key = winnerKey
-		m.value = winnerVal
+		m.key = append(m.key[:0], winnerKey...)
+		if winnerVal == nil {
+			m.value = nil
+		} else {
+			m.value = append(m.value[:0], winnerVal...)
+		}
 		m.valid = true
 		return nil
 	}

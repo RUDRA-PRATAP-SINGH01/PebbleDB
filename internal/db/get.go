@@ -22,14 +22,19 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	if err := db.blockingBackgroundErr(); err != nil {
 		return nil, err
 	}
-	if err := db.flushPendingBatch(); err != nil {
-		return nil, err
-	}
 
 	db.mu.RLock()
 	if db.closed {
 		db.mu.RUnlock()
 		return nil, ErrClosed
+	}
+
+	if val, res := lookupPendingBatch(db.pendingBatch, key); res == memLookupHit {
+		db.mu.RUnlock()
+		return val, nil
+	} else if res == memLookupTombstone {
+		db.mu.RUnlock()
+		return nil, ErrNotFound
 	}
 
 	if val, res := lookupMemtable(db.active, key); res == memLookupHit {
@@ -50,7 +55,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 		}
 	}
 
-	readers := append([]*sstable.Reader(nil), db.sstables...)
+	readers := db.snapshotSSTables()
 	for _, r := range readers {
 		r.Ref()
 	}

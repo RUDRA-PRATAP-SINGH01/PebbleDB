@@ -108,6 +108,7 @@ func (db *DB) doCompaction() error {
 	}
 
 	db.sstables = newList
+	db.publishSSTables()
 	db.mu.Unlock()
 	maybeCrash(CrashAfterSSTablesUpdate)
 

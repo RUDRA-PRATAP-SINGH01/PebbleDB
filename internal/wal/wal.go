@@ -308,69 +308,66 @@ func (w *WAL) TruncateBefore(truncateAt int64) error {
 		return w.reopenEmpty()
 	}
 
-	tmpPath := w.path + ".truncate"
-	tmp, err := os.Create(tmpPath)
-	if err != nil {
+	remaining := size - truncateAt
+	if err := w.file.Close(); err != nil {
 		return err
 	}
 
-	remaining := size - truncateAt
+	f, err := os.OpenFile(w.path, os.O_RDWR, 0644)
+	if err != nil {
+		return w.reopenAppendAfterTruncateErr(err)
+	}
+
 	const chunkSize = 64 * 1024
 	buf := make([]byte, chunkSize)
-	var copied int64
-	for copied < remaining {
-		toRead := int64(len(buf))
-		if remaining-copied < toRead {
-			toRead = remaining - copied
+	for dst := remaining; dst > 0; {
+		n := int64(len(buf))
+		if dst < n {
+			n = dst
 		}
-		n, err := w.file.ReadAt(buf[:toRead], truncateAt+copied)
+		srcOff := truncateAt + dst - n
+		dstOff := dst - n
+		readN, err := f.ReadAt(buf[:n], srcOff)
 		if err != nil && err != io.EOF {
-			tmp.Close()
-			os.Remove(tmpPath)
-			return err
+			f.Close()
+			return w.reopenAppendAfterTruncateErr(err)
 		}
-		if n == 0 {
-			tmp.Close()
-			os.Remove(tmpPath)
-			return fmt.Errorf("%w: read 0 bytes at offset %d", ErrTruncateIncomplete, truncateAt+copied)
+		if readN == 0 {
+			f.Close()
+			return w.reopenAppendAfterTruncateErr(fmt.Errorf("%w: read 0 bytes at offset %d", ErrTruncateIncomplete, srcOff))
 		}
-		if _, err := tmp.Write(buf[:n]); err != nil {
-			tmp.Close()
-			os.Remove(tmpPath)
-			return err
+		if _, err := f.WriteAt(buf[:readN], dstOff); err != nil {
+			f.Close()
+			return w.reopenAppendAfterTruncateErr(err)
 		}
-		copied += int64(n)
+		dst -= int64(readN)
 	}
 
-	if copied != remaining {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("%w: copied %d of %d bytes", ErrTruncateIncomplete, copied, remaining)
+	if err := f.Truncate(remaining); err != nil {
+		f.Close()
+		return w.reopenAppendAfterTruncateErr(err)
 	}
+	if err := f.Close(); err != nil {
+		return w.reopenAppendAfterTruncateErr(err)
+	}
+	return w.reopenAppend()
+}
 
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := w.file.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, w.path); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
+func (w *WAL) reopenAppend() error {
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return err
 	}
 	w.file = f
-	return nil
+	_, err = w.file.Seek(0, io.SeekEnd)
+	return err
+}
+
+func (w *WAL) reopenAppendAfterTruncateErr(cause error) error {
+	if err := w.reopenAppend(); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 func (w *WAL) reopenEmpty() error {

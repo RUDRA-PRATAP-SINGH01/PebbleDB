@@ -21,6 +21,7 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closed = true
+	db.closedFlag.Store(true)
 	if db.batchTimer != nil {
 		db.batchTimer.Stop()
 		db.batchTimer = nil
@@ -80,6 +81,7 @@ func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	db.sstables = nil
+	db.sstablesSnap.Store(nil)
 	db.discardAllReaders()
 	if db.wal != nil {
 		db.wal.Sync()

@@ -9,13 +9,13 @@ import (
 )
 
 const (
-	scanPriorityActive    = 1_000_000
-	scanPriorityImmutable = 999_999
+	scanPriorityPendingBatch = 1_000_001
+	scanPriorityActive       = 1_000_000
+	scanPriorityImmutable    = 999_999
 )
 
 // ScanIterator walks keys in [start, end) across memtables and SSTables.
 type ScanIterator struct {
-	db      *DB
 	merge   *iterator.MergeIterator
 	end     []byte
 	readers []*sstable.Reader
@@ -23,13 +23,7 @@ type ScanIterator struct {
 }
 
 func (it *ScanIterator) Valid() bool {
-	if it.closed || it.db == nil {
-		return false
-	}
-	it.db.mu.RLock()
-	closed := it.db.closed
-	it.db.mu.RUnlock()
-	if closed {
+	if it.closed {
 		return false
 	}
 	if it.merge == nil || !it.merge.Valid() {
@@ -50,23 +44,11 @@ func (it *ScanIterator) Next() error {
 	if it.closed {
 		return ErrClosed
 	}
-	it.db.mu.RLock()
-	closed := it.db.closed
-	it.db.mu.RUnlock()
-	if closed {
-		return ErrClosed
-	}
 	return it.merge.Next()
 }
 
 func (it *ScanIterator) Seek(key []byte) error {
 	if it.closed {
-		return ErrClosed
-	}
-	it.db.mu.RLock()
-	closed := it.db.closed
-	it.db.mu.RUnlock()
-	if closed {
 		return ErrClosed
 	}
 	return it.merge.Seek(key)
@@ -100,9 +82,6 @@ func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
 	if err := db.blockingBackgroundErr(); err != nil {
 		return nil, err
 	}
-	if err := db.flushPendingBatch(); err != nil {
-		return nil, err
-	}
 
 	db.mu.RLock()
 	if db.closed {
@@ -112,6 +91,11 @@ func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
 
 	var sources []iterator.Iterator
 	var priorities []int
+
+	if snap := snapshotPendingBatch(db.pendingBatch); len(snap) > 0 {
+		sources = append(sources, newSnapshotMemIter(snap))
+		priorities = append(priorities, scanPriorityPendingBatch)
+	}
 
 	activeSnap := db.active.Snapshot()
 	sources = append(sources, newSnapshotMemIter(activeSnap))
@@ -124,7 +108,7 @@ func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
 		priorities = append(priorities, pri)
 	}
 
-	readers := append([]*sstable.Reader(nil), db.sstables...)
+	readers := db.snapshotSSTables()
 	for _, r := range readers {
 		r.Ref()
 	}
@@ -151,7 +135,6 @@ func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
 	}
 
 	return &ScanIterator{
-		db:      db,
 		merge:   merge,
 		end:     append([]byte(nil), end...),
 		readers: readers,
@@ -182,7 +165,7 @@ func (s *snapshotMemIter) Key() []byte {
 	if !s.Valid() {
 		return nil
 	}
-	return append([]byte(nil), s.entries[s.idx].Key...)
+	return s.entries[s.idx].Key
 }
 
 func (s *snapshotMemIter) Value() []byte {
@@ -192,7 +175,7 @@ func (s *snapshotMemIter) Value() []byte {
 	if s.entries[s.idx].Tombstone {
 		return nil
 	}
-	return append([]byte(nil), s.entries[s.idx].Value...)
+	return s.entries[s.idx].Value
 }
 
 func (s *snapshotMemIter) IsTombstone() bool {

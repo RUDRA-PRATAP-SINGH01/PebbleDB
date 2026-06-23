@@ -1,8 +1,11 @@
 package db
 
 import (
+	"bytes"
+	"sort"
 	"time"
 
+	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/memtable"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/wal"
 )
 
@@ -16,7 +19,8 @@ func recordWireSize(rec wal.Record) int {
 	return 4 + len(rec.Key) + 4 + len(rec.Value) + 1 + 4
 }
 
-func copyRecord(rec wal.Record) wal.Record {
+// ownedRecord copies key/value once when the record is queued for WAL batching.
+func ownedRecord(rec wal.Record) wal.Record {
 	out := wal.Record{Tombstone: rec.Tombstone}
 	if rec.Key != nil {
 		out.Key = append([]byte(nil), rec.Key...)
@@ -35,14 +39,14 @@ func applyRecordToMemtable(db *DB, rec wal.Record) {
 	}
 }
 
-// takePendingBatchLocked moves the current WAL batch out of the queue.
+// takePendingBatchLocked moves the current WAL batch out of the queue without copying.
 // db.mu must be held.
 func takePendingBatchLocked(db *DB) []wal.Record {
 	if len(db.pendingBatch) == 0 {
 		return nil
 	}
-	batch := append([]wal.Record(nil), db.pendingBatch...)
-	db.pendingBatch = db.pendingBatch[:0]
+	batch := db.pendingBatch
+	db.pendingBatch = nil
 	db.batchSizeBytes = 0
 	return batch
 }
@@ -72,25 +76,24 @@ func (db *DB) scheduleBatchFlushLocked() {
 func (db *DB) batchFlusher() {
 	defer close(db.batchDone)
 
-	ticker := time.NewTicker(batchFlushDelay)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-db.batchStop:
 			_ = db.flushPendingBatch()
 			return
+		case reply := <-db.batchSyncCh:
+			reply <- db.flushPendingBatch()
 		case <-db.batchFlushCh:
 			_ = db.flushPendingBatch()
-		case <-ticker.C:
-			db.mu.Lock()
-			pending := len(db.pendingBatch) > 0
-			db.mu.Unlock()
-			if pending {
-				_ = db.flushPendingBatch()
-			}
 		}
 	}
+}
+
+// awaitBatchPersist hands WAL persistence to the batch flusher goroutine.
+func (db *DB) awaitBatchPersist() error {
+	reply := make(chan error, 1)
+	db.batchSyncCh <- reply
+	return <-reply
 }
 
 // flushPendingBatch writes the in-memory batch to the WAL (one fsync) and applies
@@ -117,6 +120,7 @@ func (db *DB) flushPendingBatch() error {
 		applyRecordToMemtable(db, rec)
 	}
 	shouldFlush, err := db.maybeFlushLocked()
+	db.pendingBatch = batch[:0]
 	db.mu.Unlock()
 	if err != nil {
 		return err
@@ -134,4 +138,51 @@ func (db *DB) stopBatchFlusher() {
 	close(db.batchStop)
 	<-db.batchDone
 	db.batchStop = nil
+}
+
+func lookupPendingBatch(batch []wal.Record, key []byte) ([]byte, memLookupResult) {
+	for i := len(batch) - 1; i >= 0; i-- {
+		rec := batch[i]
+		if !bytes.Equal(rec.Key, key) {
+			continue
+		}
+		if rec.Tombstone {
+			return nil, memLookupTombstone
+		}
+		return append([]byte(nil), rec.Value...), memLookupHit
+	}
+	return nil, memLookupMiss
+}
+
+func snapshotPendingBatch(batch []wal.Record) []memtable.SnapshotEntry {
+	if len(batch) == 0 {
+		return nil
+	}
+	type latest struct {
+		rec wal.Record
+		ord int
+	}
+	byKey := make(map[string]latest, len(batch))
+	for i, rec := range batch {
+		byKey[string(rec.Key)] = latest{rec: rec, ord: i}
+	}
+	keys := make([]string, 0, len(byKey))
+	for k := range byKey {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	out := make([]memtable.SnapshotEntry, len(keys))
+	for i, k := range keys {
+		rec := byKey[k].rec
+		e := memtable.SnapshotEntry{
+			Key:       append([]byte(nil), rec.Key...),
+			Tombstone: rec.Tombstone,
+		}
+		if !rec.Tombstone {
+			e.Value = append([]byte(nil), rec.Value...)
+		}
+		out[i] = e
+	}
+	return out
 }

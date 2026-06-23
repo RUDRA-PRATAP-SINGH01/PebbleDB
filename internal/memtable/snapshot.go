@@ -13,7 +13,7 @@ func (sl *SkipList) Snapshot() []SnapshotEntry {
 	sl.mu.RLock()
 	defer sl.mu.RUnlock()
 
-	var out []SnapshotEntry
+	out := make([]SnapshotEntry, 0, sl.length)
 	for x := sl.head.next[0]; x != nil; x = x.next[0] {
 		e := SnapshotEntry{
 			Key:       append([]byte(nil), x.key...),

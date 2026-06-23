@@ -75,7 +75,10 @@ func (db *DB) signalFlush(force bool) {
 			return
 		}
 	}
-	db.flushCh <- struct{}{}
+	select {
+	case db.flushCh <- struct{}{}:
+	default:
+	}
 }
 
 func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
@@ -126,6 +129,7 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 
 	db.mu.Lock()
 	db.sstables = append(db.sstables, r)
+	db.publishSSTables()
 	db.mu.Unlock()
 	db.trackReader(r)
 

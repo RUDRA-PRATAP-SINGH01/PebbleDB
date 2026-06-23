@@ -7,7 +7,9 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/manifest"
@@ -30,9 +32,11 @@ type DB struct {
 	active       *memtable.SkipList
 	pendingFlush []flushQueueEntry
 	sstables     []*sstable.Reader
+	sstablesSnap atomic.Pointer[[]*sstable.Reader]
 	wal                 *wal.WAL
 	manifest            *manifest.Log
 	closed              bool
+	closedFlag          atomic.Bool
 	flushCh          chan struct{}
 	flushDone        chan struct{}
 	compactCh        chan struct{}
@@ -52,6 +56,7 @@ type DB struct {
 	batchSizeBytes int
 	batchTimer     *time.Timer
 	batchFlushCh   chan struct{}
+	batchSyncCh    chan chan error
 	batchStop      chan struct{}
 	batchDone      chan struct{}
 }
@@ -76,6 +81,9 @@ type Options struct {
 
 // Open opens or creates a database at the given directory.
 func Open(opts Options) (*DB, error) {
+	if opts.Dir == "" {
+		return nil, ErrEmptyDir
+	}
 	if err := os.MkdirAll(opts.Dir, 0755); err != nil {
 		return nil, err
 	}
@@ -112,6 +120,7 @@ func Open(opts Options) (*DB, error) {
 		compactCh:        make(chan struct{}, 8),
 		compactDone:      make(chan struct{}),
 		batchFlushCh:     make(chan struct{}, 1),
+		batchSyncCh:      make(chan chan error, 8),
 		batchStop:        make(chan struct{}),
 		batchDone:        make(chan struct{}),
 		pendingBatch:     make([]wal.Record, 0, batchMaxRecords),
@@ -187,11 +196,14 @@ func discoverSSTIDs(dir string) ([]uint64, error) {
 		}
 		m := sstFilePattern.FindStringSubmatch(e.Name())
 		if m == nil {
+			if strings.HasPrefix(e.Name(), "sst_") && strings.HasSuffix(e.Name(), ".sst") {
+				return nil, fmt.Errorf("invalid sstable filename %q", e.Name())
+			}
 			continue
 		}
 		id, err := strconv.ParseUint(m[1], 10, 64)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("invalid sstable id in %q: %w", e.Name(), err)
 		}
 		ids = append(ids, id)
 	}
@@ -223,7 +235,25 @@ func (db *DB) loadSSTables() error {
 			db.nextSSTID = id
 		}
 	}
+	db.publishSSTables()
 	return nil
+}
+
+func (db *DB) publishSSTables() {
+	if len(db.sstables) == 0 {
+		db.sstablesSnap.Store(nil)
+		return
+	}
+	snap := append([]*sstable.Reader(nil), db.sstables...)
+	db.sstablesSnap.Store(&snap)
+}
+
+func (db *DB) snapshotSSTables() []*sstable.Reader {
+	ptr := db.sstablesSnap.Load()
+	if ptr == nil {
+		return nil
+	}
+	return *ptr
 }
 
 func (db *DB) trackReader(r *sstable.Reader) {

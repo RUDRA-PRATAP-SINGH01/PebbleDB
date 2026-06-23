@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,23 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/sstable"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/wal"
 )
+
+func TestWalFlushStateCorruptFileReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(walFlushStatePath(dir), []byte("short"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := readWalFlushState(dir)
+	if err == nil {
+		t.Fatalf("expected corrupt wal.flush error, ok=%v", ok)
+	}
+	if !errors.Is(err, ErrCorruptWalFlushState) {
+		t.Fatalf("err = %v, want ErrCorruptWalFlushState", err)
+	}
+	if _, statErr := os.Stat(walFlushStatePath(dir)); statErr == nil {
+		t.Fatal("corrupt wal.flush should be removed")
+	}
+}
 
 func TestWalReplayStartOffsetUsesFlushState(t *testing.T) {
 	dir := t.TempDir()

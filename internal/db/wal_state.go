@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -40,7 +41,8 @@ func readWalFlushState(dir string) (walFlushState, bool, error) {
 		return walFlushState{}, false, err
 	}
 	if len(data) < 16 {
-		return walFlushState{}, false, nil
+		_ = os.Remove(walFlushStatePath(dir))
+		return walFlushState{}, false, fmt.Errorf("%w: got %d bytes, want 16", ErrCorruptWalFlushState, len(data))
 	}
 	return walFlushState{
 		FreezeOffset: int64(binary.BigEndian.Uint64(data[0:8])),
