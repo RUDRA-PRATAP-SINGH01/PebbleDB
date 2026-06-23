@@ -207,7 +207,7 @@ func minKeyAcross(iters []*Iterator) ([]byte, []int) {
 		if minKey == nil || bytes.Compare(it.key, minKey) < 0 {
 			minKey = it.key
 			at = []int{i}
-		} else if bytes.Compare(it.key, minKey) == 0 {
+		} else if bytes.Equal(it.key, minKey) {
 			at = append(at, i)
 		}
 	}
@@ -215,5 +215,5 @@ func minKeyAcross(iters []*Iterator) ([]byte, []int) {
 }
 
 func bytesEqual(a, b []byte) bool {
-	return bytes.Compare(a, b) == 0
+	return bytes.Equal(a, b)
 }

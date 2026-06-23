@@ -3,11 +3,11 @@ package wal
 import "errors"
 
 const (
-	DefaultMaxWALFileSize  int64  = 64 << 20  // 64 MiB
-	DefaultMaxKeySize      uint32 = 1 << 20   // 1 MiB
-	DefaultMaxValueSize    uint32 = 16 << 20  // 16 MiB
-	DefaultMaxRecordSize   uint32 = 17 << 20  // key + value + overhead
-	recordHeaderSize              = 4 + 4 + 1 + 4
+	DefaultMaxWALFileSize int64  = 64 << 20 // 64 MiB
+	DefaultMaxKeySize     uint32 = 1 << 20  // 1 MiB
+	DefaultMaxValueSize   uint32 = 16 << 20 // 16 MiB
+	DefaultMaxRecordSize  uint32 = 17 << 20 // key + value + overhead
+	recordHeaderSize             = 4 + 4 + 1 + 4
 )
 
 var (
@@ -19,9 +19,9 @@ var (
 
 // ReplayLimits bounds WAL replay and append sizes to prevent OOM on corrupt data.
 type ReplayLimits struct {
-	MaxFileSize  int64
-	MaxKeySize   uint32
-	MaxValueSize uint32
+	MaxFileSize   int64
+	MaxKeySize    uint32
+	MaxValueSize  uint32
 	MaxRecordSize uint32
 }
 

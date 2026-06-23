@@ -28,9 +28,9 @@ func waitForCompaction(t *testing.T, db *DB, maxSST int) {
 func TestCompactionMergesDuplicateKeys(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(Options{
-		Dir:                   dir,
-		MemtableSize: 8,
-		CompactionThreshold:   2,
+		Dir:                 dir,
+		MemtableSize:        8,
+		CompactionThreshold: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -74,9 +74,9 @@ func TestCompactionMergesDuplicateKeys(t *testing.T) {
 func TestCompactionDropsDeletedKeys(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(Options{
-		Dir:                   dir,
-		MemtableSize: 8,
-		CompactionThreshold:   2,
+		Dir:                 dir,
+		MemtableSize:        8,
+		CompactionThreshold: 2,
 	})
 	if err != nil {
 		t.Fatal(err)

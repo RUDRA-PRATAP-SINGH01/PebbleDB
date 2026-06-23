@@ -102,7 +102,7 @@ func (m *MergeIterator) advance() error {
 			if !s.it.Valid() {
 				continue
 			}
-			if bytes.Compare(s.it.Key(), minKey) != 0 {
+			if !bytes.Equal(s.it.Key(), minKey) {
 				continue
 			}
 			if s.priority > bestPri {

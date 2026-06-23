@@ -265,4 +265,3 @@ func TestWalFlushStateRoundTrip(t *testing.T) {
 		t.Fatalf("after remove: ok=%v err=%v", ok, err)
 	}
 }
-

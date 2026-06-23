@@ -27,16 +27,16 @@ var sstFilePattern = regexp.MustCompile(`^sst_(\d{8})\.sst$`)
 
 // DB is the main database handle.
 type DB struct {
-	mu                  sync.RWMutex
-	dir                 string
-	active       *memtable.SkipList
-	pendingFlush []flushQueueEntry
-	sstables     []*sstable.Reader
-	sstablesSnap atomic.Pointer[[]*sstable.Reader]
-	wal                 *wal.WAL
-	manifest            *manifest.Log
-	closed              bool
-	closedFlag          atomic.Bool
+	mu               sync.RWMutex
+	dir              string
+	active           *memtable.SkipList
+	pendingFlush     []flushQueueEntry
+	sstables         []*sstable.Reader
+	sstablesSnap     atomic.Pointer[[]*sstable.Reader]
+	wal              *wal.WAL
+	manifest         *manifest.Log
+	closed           bool
+	closedFlag       atomic.Bool
 	flushCh          chan struct{}
 	flushDone        chan struct{}
 	compactCh        chan struct{}
@@ -47,9 +47,9 @@ type DB struct {
 	nextSSTID        uint64
 	memtableSize     int64
 	compactThreshold int
-	walLimits  wal.ReplayLimits
-	blockCache *sstable.BlockCache
-	bgErrs     *backgroundErrStore
+	walLimits        wal.ReplayLimits
+	blockCache       *sstable.BlockCache
+	bgErrs           *backgroundErrStore
 
 	// Group commit: batch WAL appends and fsync once per batch.
 	pendingBatch   []wal.Record
@@ -108,9 +108,9 @@ func Open(opts Options) (*DB, error) {
 	}
 
 	db := &DB{
-		dir:                 opts.Dir,
-		active:              memtable.NewSkipList(),
-		memtableSize:        memtableSize,
+		dir:              opts.Dir,
+		active:           memtable.NewSkipList(),
+		memtableSize:     memtableSize,
 		compactThreshold: compactThreshold,
 		walLimits:        walLimits,
 		blockCache:       blockCache,
@@ -278,4 +278,3 @@ func (db *DB) discardAllReaders() {
 func (db *DB) BackgroundError() error {
 	return db.backgroundErr()
 }
-

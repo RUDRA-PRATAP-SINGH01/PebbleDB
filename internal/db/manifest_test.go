@@ -13,9 +13,9 @@ func TestManifestIgnoresOrphanSSTAfterCompactionCrash(t *testing.T) {
 	dir := t.TempDir()
 
 	db1, err := Open(Options{
-		Dir:                   dir,
-		MemtableSize: 8,
-		CompactionThreshold:   2,
+		Dir:                 dir,
+		MemtableSize:        8,
+		CompactionThreshold: 2,
 	})
 	if err != nil {
 		t.Fatal(err)

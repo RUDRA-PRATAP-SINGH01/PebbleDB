@@ -43,7 +43,10 @@ func reportThroughput(b *testing.B, ops int, bytesPerOp int) {
 
 // ---------- Benchmarks ----------
 func BenchmarkSequentialWrite(b *testing.B) {
-	for _, tc := range []struct{ name string; n int }{
+	for _, tc := range []struct {
+		name string
+		n    int
+	}{
 		{"100k", 100_000},
 		{"500k", 500_000},
 		{"1M", 1_000_000},
@@ -173,7 +176,10 @@ func BenchmarkScanThroughput(b *testing.B) {
 	start := keys[0]
 	bytesPerEntry := len(keys[0]) + benchValueLen
 
-	for _, tc := range []struct{ name string; count int }{
+	for _, tc := range []struct {
+		name  string
+		count int
+	}{
 		{"1k", 1_000},
 		{"10k", 10_000},
 		{"50k", 50_000},

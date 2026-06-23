@@ -27,6 +27,7 @@ linters-settings:
     enable-all: true
     disable:
       - fieldalignment  # Disable struct alignment warnings (we prioritize read/write layout over memory padding)
+      - shadow          # Idiomatic Go reuses err in nested scopes; shadow warnings are noisy here
   staticcheck:
     checks:
       - "all"

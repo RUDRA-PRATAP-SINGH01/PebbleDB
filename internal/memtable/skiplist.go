@@ -15,9 +15,9 @@ const (
 type SkipList struct {
 	mu     sync.RWMutex
 	head   *node
-	height int      // current max level
-	length int      // number of entries (including tombstones)
-	size   int64    // approximate byte size (used only for flush threshold)
+	height int   // current max level
+	length int   // number of entries (including tombstones)
+	size   int64 // approximate byte size (used only for flush threshold)
 	rng    *rand.Rand
 }
 
