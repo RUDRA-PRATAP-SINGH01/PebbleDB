@@ -26,7 +26,22 @@ func writeWalFlushState(dir string, st walFlushState) error {
 	binary.BigEndian.PutUint64(buf[0:8], uint64(st.FreezeOffset))
 	binary.BigEndian.PutUint64(buf[8:16], st.SSTID)
 	tmp := walFlushStatePath(dir) + ".tmp"
-	if err := os.WriteFile(tmp, buf, 0644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(buf); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, walFlushStatePath(dir))

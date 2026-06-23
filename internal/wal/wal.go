@@ -287,6 +287,9 @@ func (w *WAL) Truncate() error {
 
 // TruncateBefore removes the first truncateAt bytes and keeps the remainder.
 // Used after flush so records for the new active memtable are preserved.
+//
+// Implementation copies the tail into a temp file, fsyncs, then atomically
+// replaces wal.log so a crash mid-truncate cannot corrupt the original WAL.
 func (w *WAL) TruncateBefore(truncateAt int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -305,52 +308,59 @@ func (w *WAL) TruncateBefore(truncateAt int64) error {
 	}
 	size := fi.Size()
 	if truncateAt >= size {
-		return w.reopenEmpty()
+		return w.reopenEmptyLocked()
 	}
 
-	remaining := size - truncateAt
-	if err := w.file.Close(); err != nil {
+	tmpPath := w.path + ".truncate.tmp"
+	if err := w.copyWalTailLocked(truncateAt, size, tmpPath); err != nil {
+		os.Remove(tmpPath)
 		return err
 	}
 
-	f, err := os.OpenFile(w.path, os.O_RDWR, 0644)
-	if err != nil {
+	if err := w.file.Close(); err != nil {
+		os.Remove(tmpPath)
 		return w.reopenAppendAfterTruncateErr(err)
 	}
+	w.file = nil
+
+	if err := os.Rename(tmpPath, w.path); err != nil {
+		os.Remove(tmpPath)
+		if reopenErr := w.reopenAppend(); reopenErr != nil {
+			return errors.Join(err, reopenErr)
+		}
+		return err
+	}
+
+	return w.reopenAppend()
+}
+
+func (w *WAL) copyWalTailLocked(truncateAt, size int64, tmpPath string) error {
+	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer tmp.Close()
 
 	const chunkSize = 64 * 1024
 	buf := make([]byte, chunkSize)
-	for dst := remaining; dst > 0; {
+	for off := truncateAt; off < size; {
 		n := int64(len(buf))
-		if dst < n {
-			n = dst
+		if size-off < n {
+			n = size - off
 		}
-		srcOff := truncateAt + dst - n
-		dstOff := dst - n
-		readN, err := f.ReadAt(buf[:n], srcOff)
+		readN, err := w.file.ReadAt(buf[:n], off)
 		if err != nil && err != io.EOF {
-			f.Close()
-			return w.reopenAppendAfterTruncateErr(err)
+			return err
 		}
 		if readN == 0 {
-			f.Close()
-			return w.reopenAppendAfterTruncateErr(fmt.Errorf("%w: read 0 bytes at offset %d", ErrTruncateIncomplete, srcOff))
+			return fmt.Errorf("%w: read 0 bytes at offset %d", ErrTruncateIncomplete, off)
 		}
-		if _, err := f.WriteAt(buf[:readN], dstOff); err != nil {
-			f.Close()
-			return w.reopenAppendAfterTruncateErr(err)
+		if _, err := tmp.Write(buf[:readN]); err != nil {
+			return err
 		}
-		dst -= int64(readN)
+		off += int64(readN)
 	}
-
-	if err := f.Truncate(remaining); err != nil {
-		f.Close()
-		return w.reopenAppendAfterTruncateErr(err)
-	}
-	if err := f.Close(); err != nil {
-		return w.reopenAppendAfterTruncateErr(err)
-	}
-	return w.reopenAppend()
+	return tmp.Sync()
 }
 
 func (w *WAL) reopenAppend() error {
@@ -371,6 +381,12 @@ func (w *WAL) reopenAppendAfterTruncateErr(cause error) error {
 }
 
 func (w *WAL) reopenEmpty() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.reopenEmptyLocked()
+}
+
+func (w *WAL) reopenEmptyLocked() error {
 	if err := w.file.Close(); err != nil {
 		return err
 	}

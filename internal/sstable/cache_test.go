@@ -31,7 +31,7 @@ func TestBlockCacheHit(t *testing.T) {
 	defer r.Close()
 
 	entry := r.index[0]
-	key := blockCacheKey(r.fileID, entry.Offset)
+	key := makeBlockCacheKey(r.fileID, entry.Offset)
 
 	if _, ok := r.blockCache.get(key); ok {
 		t.Fatal("cache should be cold before first read")

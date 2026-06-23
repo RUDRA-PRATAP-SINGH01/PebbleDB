@@ -102,7 +102,7 @@ func OpenReader(path string, cache *BlockCache) (*Reader, error) {
 
 // readBlock returns a block at offset/length, consulting the LRU cache first.
 func (r *Reader) readBlock(offset, length uint64) ([]byte, error) {
-	key := blockCacheKey(r.fileID, offset)
+	key := makeBlockCacheKey(r.fileID, offset)
 	if r.blockCache != nil {
 		if data, ok := r.blockCache.get(key); ok {
 			return data, nil

@@ -79,14 +79,17 @@ func TestOpenRejectsEmptyDir(t *testing.T) {
 	}
 }
 
-func TestDiscoverSSTIDsRejectsInvalidID(t *testing.T) {
+func TestDiscoverSSTIDsSkipsInvalidID(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/sst_badid.sst", []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := discoverSSTIDs(dir)
-	if err == nil {
-		t.Fatal("expected invalid sstable id error")
+	ids, err := discoverSSTIDs(dir)
+	if err != nil {
+		t.Fatalf("discoverSSTIDs should skip invalid names: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("got ids %v, want none", ids)
 	}
 }
 

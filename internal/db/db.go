@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -50,6 +51,9 @@ type DB struct {
 	walLimits        wal.ReplayLimits
 	blockCache       *sstable.BlockCache
 	bgErrs           *backgroundErrStore
+	syncWrites       bool
+	blockWritesOnFlushError bool
+	dirLock          *os.File
 
 	// Group commit: batch WAL appends and fsync once per batch.
 	pendingBatch   []wal.Record
@@ -64,6 +68,7 @@ type DB struct {
 type flushQueueEntry struct {
 	mem       *memtable.SkipList
 	walCutoff int64
+	retries   int
 }
 
 // Options control database behaviour.
@@ -77,6 +82,12 @@ type Options struct {
 	WALReplayLimits     wal.ReplayLimits
 	// BlockCacheSize is the SST block cache in bytes; 0 uses 32 MiB; negative disables caching.
 	BlockCacheSize int64
+	// SyncWrites waits for WAL fsync before Put/Delete return. When false (default),
+	// writes are group-committed asynchronously; call Sync() for a durability barrier.
+	SyncWrites bool
+	// BlockWritesOnFlushError blocks new writes after a persistent flush failure.
+	// Defaults to true. Reads continue from existing SST/memtable data.
+	BlockWritesOnFlushError *bool
 }
 
 // Open opens or creates a database at the given directory.
@@ -87,6 +98,17 @@ func Open(opts Options) (*DB, error) {
 	if err := os.MkdirAll(opts.Dir, 0755); err != nil {
 		return nil, err
 	}
+
+	dirLock, err := acquireDirLock(opts.Dir)
+	if err != nil {
+		return nil, err
+	}
+	openFailed := true
+	defer func() {
+		if openFailed {
+			releaseDirLock(dirLock)
+		}
+	}()
 
 	memtableSize := opts.MemtableSize
 	if memtableSize <= 0 {
@@ -100,6 +122,11 @@ func Open(opts Options) (*DB, error) {
 
 	walLimits := opts.WALReplayLimits.WithDefaults()
 
+	blockWritesOnFlushError := true
+	if opts.BlockWritesOnFlushError != nil {
+		blockWritesOnFlushError = *opts.BlockWritesOnFlushError
+	}
+
 	var blockCache *sstable.BlockCache
 	if opts.BlockCacheSize < 0 {
 		blockCache = nil
@@ -108,14 +135,17 @@ func Open(opts Options) (*DB, error) {
 	}
 
 	db := &DB{
-		dir:              opts.Dir,
-		active:           memtable.NewSkipList(),
-		memtableSize:     memtableSize,
-		compactThreshold: compactThreshold,
-		walLimits:        walLimits,
-		blockCache:       blockCache,
-		bgErrs:           newBackgroundErrStore(),
-		flushCh:          make(chan struct{}, 8),
+		dir:                     opts.Dir,
+		active:                  memtable.NewSkipList(),
+		memtableSize:            memtableSize,
+		compactThreshold:        compactThreshold,
+		walLimits:               walLimits,
+		blockCache:              blockCache,
+		bgErrs:                  newBackgroundErrStore(),
+		syncWrites:              opts.SyncWrites,
+		blockWritesOnFlushError: blockWritesOnFlushError,
+		dirLock:                 dirLock,
+		flushCh:                 make(chan struct{}, 8),
 		flushDone:        make(chan struct{}),
 		compactCh:        make(chan struct{}, 8),
 		compactDone:      make(chan struct{}),
@@ -181,6 +211,7 @@ func Open(opts Options) (*DB, error) {
 	go db.flusher()
 	go db.compactor()
 	db.maybeTriggerCompaction()
+	openFailed = false
 	return db, nil
 }
 
@@ -197,13 +228,14 @@ func discoverSSTIDs(dir string) ([]uint64, error) {
 		m := sstFilePattern.FindStringSubmatch(e.Name())
 		if m == nil {
 			if strings.HasPrefix(e.Name(), "sst_") && strings.HasSuffix(e.Name(), ".sst") {
-				return nil, fmt.Errorf("invalid sstable filename %q", e.Name())
+				log.Printf("pebbledb: skipping invalid sstable filename %q", e.Name())
 			}
 			continue
 		}
 		id, err := strconv.ParseUint(m[1], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("invalid sstable id in %q: %w", e.Name(), err)
+			log.Printf("pebbledb: skipping invalid sstable id in %q: %v", e.Name(), err)
+			continue
 		}
 		ids = append(ids, id)
 	}

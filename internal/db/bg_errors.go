@@ -6,11 +6,11 @@ import (
 	"sync"
 )
 
-// blockingBackgroundOps are background failure kinds that block foreground writes
-// and reads. Flush and compaction failures are recorded but do not block new WAL
-// writes or point lookups while existing data remains readable.
-var blockingBackgroundOps = map[string]struct{}{
-	"wal": {},
+// writeBlockingBackgroundOps are background failure kinds that block new writes.
+// Reads continue from memtables and SSTables so durable data stays available.
+var writeBlockingBackgroundOps = map[string]struct{}{
+	"wal":   {},
+	"flush": {},
 }
 
 type backgroundErrStore struct {
@@ -41,8 +41,11 @@ func (db *DB) backgroundErr() error {
 	return db.bgErrs.join(nil)
 }
 
-func (db *DB) blockingBackgroundErr() error {
-	return db.bgErrs.join(blockingBackgroundOps)
+func (db *DB) writeBlockingBackgroundErr() error {
+	if !db.blockWritesOnFlushError {
+		return db.bgErrs.join(map[string]struct{}{"wal": {}})
+	}
+	return db.bgErrs.join(writeBlockingBackgroundOps)
 }
 
 func (s *backgroundErrStore) join(only map[string]struct{}) error {

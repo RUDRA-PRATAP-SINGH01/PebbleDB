@@ -74,7 +74,7 @@ func forEachBackgroundError(err error, fn func(*BackgroundError)) {
 	}
 }
 
-func TestFlushErrorDoesNotBlockWrites(t *testing.T) {
+func TestFlushErrorBlocksWrites(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(Options{Dir: dir, CompactionThreshold: 1000})
 	if err != nil {
@@ -82,10 +82,17 @@ func TestFlushErrorDoesNotBlockWrites(t *testing.T) {
 	}
 	defer db.Close()
 
+	if err := db.Put([]byte("k"), []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
 	db.setBackgroundErr("flush", os.ErrPermission)
 
-	if err := db.Put([]byte("k"), []byte("v")); err != nil {
-		t.Fatalf("Put should succeed while only flush is failing: %v", err)
+	if err := db.Put([]byte("k2"), []byte("v2")); err == nil {
+		t.Fatal("Put should fail while flush background error is set")
 	}
 
 	val, err := db.Get([]byte("k"))
@@ -97,7 +104,7 @@ func TestFlushErrorDoesNotBlockWrites(t *testing.T) {
 	}
 }
 
-func TestWalBackgroundErrorBlocksForegroundOps(t *testing.T) {
+func TestWalBackgroundErrorBlocksWritesOnly(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(Options{Dir: dir, CompactionThreshold: 1000})
 	if err != nil {
@@ -105,16 +112,27 @@ func TestWalBackgroundErrorBlocksForegroundOps(t *testing.T) {
 	}
 	defer db.Close()
 
+	if err := db.Put([]byte("existing"), []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Sync(); err != nil {
+		t.Fatal(err)
+	}
+
 	db.setBackgroundErr("wal", os.ErrPermission)
 
 	if err := db.Put([]byte("k"), []byte("v")); err == nil {
 		t.Fatal("expected WAL background error on Put")
 	}
-	if _, err := db.Get([]byte("k")); err == nil {
-		t.Fatal("expected WAL background error on Get")
+	val, err := db.Get([]byte("existing"))
+	if err != nil {
+		t.Fatalf("Get should succeed during WAL background error: %v", err)
 	}
-	if _, err := db.Scan(nil, nil); err == nil {
-		t.Fatal("expected WAL background error on Scan")
+	if string(val) != "data" {
+		t.Fatalf("got %q, want data", val)
+	}
+	if _, err := db.Scan(nil, nil); err != nil {
+		t.Fatalf("Scan should succeed during WAL background error: %v", err)
 	}
 }
 
@@ -181,7 +199,7 @@ func TestCompactionDisabledWithNegativeThreshold(t *testing.T) {
 	}
 }
 
-func TestCloseReturnsTimeoutWhenFlushStuck(t *testing.T) {
+func TestCloseReturnsIncompleteWhenFlushStuck(t *testing.T) {
 	oldTimeout := closeFlushDrainTimeout
 	closeFlushDrainTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { closeFlushDrainTimeout = oldTimeout })
@@ -199,13 +217,24 @@ func TestCloseReturnsTimeoutWhenFlushStuck(t *testing.T) {
 	})
 	database.mu.Unlock()
 
-	if err := database.manifest.Close(); err != nil {
-		t.Fatal(err)
-	}
-	database.manifest = nil
+	done := make(chan error, 1)
+	go func() {
+		done <- database.Close()
+	}()
 
-	err = database.Close()
-	if !errors.Is(err, ErrCloseFlushTimeout) {
-		t.Fatalf("Close() = %v, want ErrCloseFlushTimeout", err)
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCloseIncomplete) {
+			t.Fatalf("Close() = %v, want ErrCloseIncomplete", err)
+		}
+		if database.manifest == nil {
+			t.Fatal("manifest should remain open after incomplete close")
+		}
+		_ = database.manifest.Close()
+		if database.wal != nil {
+			_ = database.wal.Close()
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() blocked past flush drain timeout")
 	}
 }

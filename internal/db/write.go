@@ -3,7 +3,7 @@ package db
 import "github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/wal"
 
 func (db *DB) writeRecord(rec wal.Record) error {
-	if err := db.blockingBackgroundErr(); err != nil {
+	if err := db.writeBlockingBackgroundErr(); err != nil {
 		return err
 	}
 
@@ -17,7 +17,8 @@ func (db *DB) writeRecord(rec wal.Record) error {
 	db.batchSizeBytes += recordWireSize(rec)
 	db.scheduleBatchFlushLocked()
 
-	flushNow := len(db.pendingBatch) >= batchMaxRecords ||
+	flushNow := db.syncWrites ||
+		len(db.pendingBatch) >= batchMaxRecords ||
 		db.batchSizeBytes >= batchMaxBytes ||
 		db.active.Size()+int64(db.batchSizeBytes) > db.memtableSize
 	if !flushNow {

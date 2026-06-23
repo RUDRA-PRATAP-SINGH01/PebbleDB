@@ -79,10 +79,6 @@ func (it *ScanIterator) Close() error {
 // are omitted from iteration. Use Get for a live read of a single key, or call
 // Scan again to observe newer data.
 func (db *DB) Scan(start, end []byte) (*ScanIterator, error) {
-	if err := db.blockingBackgroundErr(); err != nil {
-		return nil, err
-	}
-
 	db.mu.RLock()
 	if db.closed {
 		db.mu.RUnlock()

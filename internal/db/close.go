@@ -10,10 +10,13 @@ import (
 
 var (
 	closeFlushDrainTimeout = 30 * time.Second
-	closeWorkerJoinTimeout = 5 * time.Second
+	closeWorkerJoinTimeout = 30 * time.Second
 )
 
 // Close flushes pending data and closes the database.
+// If shutdown cannot complete (flush drain or worker join timeout), Close returns
+// an error and leaves the database closed without tearing down WAL/manifest handles
+// so background workers cannot race with a nil manifest.
 func (db *DB) Close() error {
 	db.mu.Lock()
 	if db.closed {
@@ -28,18 +31,12 @@ func (db *DB) Close() error {
 	}
 	db.mu.Unlock()
 
+	defer func() {
+		releaseDirLock(db.dirLock)
+		db.dirLock = nil
+	}()
+
 	var closeErr error
-	workersShutdown := false
-	shutdownWorkers := func() {
-		if workersShutdown {
-			return
-		}
-		workersShutdown = true
-		if err := db.shutdownBackgroundWorkers(); err != nil {
-			closeErr = errors.Join(closeErr, err)
-		}
-	}
-	defer shutdownWorkers()
 
 	db.stopBatchFlusher()
 	if err := db.flushPendingBatch(); err != nil {
@@ -58,7 +55,7 @@ func (db *DB) Close() error {
 			if err != nil {
 				db.mu.Unlock()
 				closeErr = errors.Join(closeErr, err)
-				break
+				return errors.Join(closeErr, ErrCloseIncomplete)
 			}
 			db.pendingFlush = append(db.pendingFlush, flushQueueEntry{
 				mem:       db.active,
@@ -74,13 +71,13 @@ func (db *DB) Close() error {
 		}
 		if err := db.waitForPendingFlushDrain(closeFlushDrainTimeout); err != nil {
 			closeErr = errors.Join(closeErr, err)
-			break
+			return errors.Join(closeErr, ErrCloseIncomplete)
 		}
 	}
 
-	// Stop flush/compaction before closing SST readers; otherwise doCompaction
-	// can read blocks while discardAllReaders closes the same files (-race).
-	shutdownWorkers()
+	if err := db.shutdownBackgroundWorkers(); err != nil {
+		return errors.Join(closeErr, err, ErrCloseIncomplete)
+	}
 
 	db.mu.Lock()
 	defer db.mu.Unlock()

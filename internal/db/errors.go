@@ -11,6 +11,8 @@ var ErrEmptyDir = errors.New("database directory path is empty")
 var ErrCorruptWalFlushState = errors.New("wal.flush: corrupt or truncated state file")
 var ErrCloseFlushTimeout = errors.New("close: timed out waiting for flush to complete")
 var ErrCloseWorkerTimeout = errors.New("close: timed out waiting for background workers to stop")
+var ErrDatabaseLocked = errors.New("database directory is already open in another process")
+var ErrCloseIncomplete = errors.New("close: shutdown incomplete; database left in closed unusable state")
 
 // BackgroundError is returned when a background operation failed.
 type BackgroundError struct {

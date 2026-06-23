@@ -14,6 +14,8 @@ import (
 
 const flushRetryDelay = 100 * time.Millisecond
 
+var maxFlushRetries = 50
+
 func (db *DB) flusher() {
 	for range db.flushCh {
 		db.drainPendingFlush()
@@ -35,14 +37,30 @@ func (db *DB) drainPendingFlush() {
 
 		if err := db.flushImmutable(entry.mem, entry.walCutoff); err != nil {
 			db.setBackgroundErr("flush", err)
-			log.Printf("pebbledb: flush error: %v (retrying)", err)
+			log.Printf("pebbledb: flush error: %v (retry %d/%d)", err, entry.retries+1, maxFlushRetries)
 
 			db.mu.RLock()
 			closed := db.closed
 			db.mu.RUnlock()
-			if closed {
-				return
+
+			entry.retries++
+			if closed || entry.retries >= maxFlushRetries {
+				db.mu.Lock()
+				if len(db.pendingFlush) > 0 {
+					db.pendingFlush = db.pendingFlush[1:]
+				}
+				db.mu.Unlock()
+				if entry.retries >= maxFlushRetries {
+					log.Printf("pebbledb: abandoning flush after %d retries: %v", maxFlushRetries, err)
+				}
+				continue
 			}
+
+			db.mu.Lock()
+			if len(db.pendingFlush) > 0 {
+				db.pendingFlush[0] = entry
+			}
+			db.mu.Unlock()
 
 			time.Sleep(flushRetryDelay)
 			continue
@@ -82,6 +100,10 @@ func (db *DB) signalFlush(force bool) {
 }
 
 func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
+	if db.manifest == nil {
+		return fmt.Errorf("manifest unavailable")
+	}
+
 	id := atomic.AddUint64(&db.nextSSTID, 1)
 	path := filepath.Join(db.dir, fmt.Sprintf("sst_%08d.sst", id))
 
