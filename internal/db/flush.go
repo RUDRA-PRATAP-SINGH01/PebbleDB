@@ -45,8 +45,7 @@ func (db *DB) drainPendingFlush() {
 			}
 
 			time.Sleep(flushRetryDelay)
-			db.notifyFlush()
-			return
+			continue
 		}
 
 		db.mu.Lock()
@@ -117,21 +116,22 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 	}
 
 	// Manifest commit is the durability boundary. After this point the SST must
-	// remain on disk and become visible even if WAL cleanup fails.
+	// remain on disk and become visible even if WAL cleanup or manifest rotation fails.
 	if err := db.manifest.AppendNewFile(id); err != nil {
 		r.Close()
 		os.Remove(path)
 		return err
 	}
 	maybeCrash(CrashAfterManifestNewFile)
-	if err := db.manifest.MaybeCompact(); err != nil {
-		return err
-	}
 
 	db.mu.Lock()
 	db.sstables = append(db.sstables, r)
 	db.mu.Unlock()
 	db.trackReader(r)
+
+	if err := db.manifest.MaybeCompact(); err != nil {
+		log.Printf("pebbledb: manifest compaction after flush: %v (data is durable)", err)
+	}
 
 	if err := db.completeWalAfterFlush(walCutoff, id); err != nil {
 		log.Printf("pebbledb: wal cleanup after flush of sst %d: %v (data is durable; reopen will recover)", id, err)

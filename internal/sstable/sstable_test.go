@@ -123,11 +123,58 @@ func TestSSTableBloomFilterSkip(t *testing.T) {
 
 	if r.MayContain([]byte("not-in-table")) {
 		_, found, _, err := r.Get([]byte("not-in-table"))
-	if err != nil {
-		t.Fatal(err)
-	}
+		if err != nil {
+			t.Fatal(err)
+		}
 		if found {
 			t.Error("key not in SSTable should not be found")
 		}
+	}
+}
+
+func TestDiscardRespectsRefs(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/test.sst"
+
+	mt := memtable.NewSkipList()
+	mt.Put([]byte("key"), []byte("value"))
+
+	w, err := NewWriter(path, 4096, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := mt.Iterator()
+	for it.Valid() {
+		if err := w.Add(it.Key(), it.Value(), it.IsTombstone()); err != nil {
+			t.Fatal(err)
+		}
+		it.Next()
+	}
+	it.Close()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := OpenReader(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.Ref()
+	if err := r.Discard(); err != nil {
+		t.Fatal(err)
+	}
+
+	val, found, _, err := r.Get([]byte("key"))
+	if err != nil {
+		t.Fatalf("Get during held ref after Discard: %v", err)
+	}
+	if !found || string(val) != "value" {
+		t.Fatalf("key = %q found=%v, want value true", val, found)
+	}
+
+	r.Unref()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("discarded file should be removed after last Unref, stat err=%v", err)
 	}
 }

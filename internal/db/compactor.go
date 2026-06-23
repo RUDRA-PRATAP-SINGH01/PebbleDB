@@ -95,14 +95,6 @@ func (db *DB) doCompaction() error {
 		return err
 	}
 	maybeCrash(CrashAfterManifestSetFileSet)
-	if err := db.manifest.MaybeCompact(); err != nil {
-		return err
-	}
-
-	oldPaths := make([]string, len(compReaders))
-	for i, r := range compReaders {
-		oldPaths[i] = r.Path()
-	}
 
 	db.mu.Lock()
 	if !readersStillPresent(db.sstables, compReaders) {
@@ -121,16 +113,13 @@ func (db *DB) doCompaction() error {
 
 	db.trackReader(newReader)
 
+	if err := db.manifest.MaybeCompact(); err != nil {
+		log.Printf("pebbledb: manifest compaction after merge: %v (data is durable)", err)
+	}
+
 	for _, r := range compReaders {
 		if err := r.Discard(); err != nil {
 			log.Printf("pebbledb: discard compacted SST: %v", err)
-		}
-	}
-	for _, p := range oldPaths {
-		if p != "" {
-			if err := removeSSTPath(p); err != nil {
-				log.Printf("pebbledb: remove compacted SST %s: %v", p, err)
-			}
 		}
 	}
 	maybeCrash(CrashAfterDeleteOldSSTs)

@@ -247,7 +247,7 @@ func (db *DB) trackReader(r *sstable.Reader) {
 func (db *DB) discardAllReaders() {
 	db.readersMu.Lock()
 	for _, r := range db.allReaders {
-		_ = r.Discard()
+		_ = r.Close()
 	}
 	db.allReaders = nil
 	db.readersMu.Unlock()

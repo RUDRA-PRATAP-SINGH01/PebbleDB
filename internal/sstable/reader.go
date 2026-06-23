@@ -13,16 +13,18 @@ import (
 )
 
 type Reader struct {
-	file         *os.File
-	footer       Footer
-	index        []IndexEntry
-	bloom        *bloom.Filter
-	fileID       uint64
-	blockCache   *BlockCache
-	refs         atomic.Int32
-	closePending atomic.Bool
-	fileClosed   atomic.Bool
-	closeMu      sync.Mutex
+	file           *os.File
+	path           string
+	footer         Footer
+	index          []IndexEntry
+	bloom          *bloom.Filter
+	fileID         uint64
+	blockCache     *BlockCache
+	refs           atomic.Int32
+	closePending   atomic.Bool
+	discardPending atomic.Bool
+	fileClosed     atomic.Bool
+	closeMu        sync.Mutex
 }
 
 // OpenReader opens an SSTable at path. cache may be nil to disable block caching.
@@ -89,6 +91,7 @@ func OpenReader(path string, cache *BlockCache) (*Reader, error) {
 
 	return &Reader{
 		file:       f,
+		path:       f.Name(),
 		footer:     *footer,
 		index:      index,
 		bloom:      bf,
@@ -208,11 +211,16 @@ func (r *Reader) Close() error {
 	return nil
 }
 
-// Discard closes the backing file immediately so the path can be deleted.
-// Only call after the reader is removed from the live SSTable set.
+// Discard marks the reader for removal and deletes the backing file once all
+// in-flight Ref holders have called Unref. Only call after the reader is
+// removed from the live SSTable set.
 func (r *Reader) Discard() error {
 	r.closePending.Store(true)
-	return r.closeFile()
+	r.discardPending.Store(true)
+	if r.refs.Load() == 0 {
+		return r.closeFile()
+	}
+	return nil
 }
 
 func (r *Reader) closeFile() error {
@@ -224,6 +232,9 @@ func (r *Reader) closeFile() error {
 	err := r.file.Close()
 	r.file = nil
 	r.fileClosed.Store(true)
+	if r.discardPending.Load() && r.path != "" {
+		_ = os.Remove(r.path)
+	}
 	return err
 }
 

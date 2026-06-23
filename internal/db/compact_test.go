@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/sstable"
 )
 
 func waitForCompaction(t *testing.T, db *DB, maxSST int) {
@@ -170,5 +172,66 @@ func TestBackgroundErrorSurfacesToCaller(t *testing.T) {
 
 	if db.BackgroundError() == nil {
 		t.Error("BackgroundError() should report stored error")
+	}
+}
+
+func TestGetSurvivesCompactionWithHeldRefs(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(Options{
+		Dir:                 dir,
+		MemtableSize:        8,
+		CompactionThreshold: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for round := 0; round < 3; round++ {
+		if err := db.Put([]byte("stable"), []byte(fmt.Sprintf("v%d", round))); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 4; i++ {
+			key := fmt.Sprintf("k%d-%d", round, i)
+			if err := db.Put([]byte(key), []byte("x")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		waitForFlush(t, db)
+	}
+
+	db.mu.RLock()
+	readers := append([]*sstable.Reader(nil), db.sstables...)
+	for _, r := range readers {
+		r.Ref()
+	}
+	db.mu.RUnlock()
+	defer func() {
+		for _, r := range readers {
+			r.Unref()
+		}
+	}()
+
+	waitForCompaction(t, db, 1)
+
+	for _, r := range readers {
+		val, found, _, err := r.Get([]byte("stable"))
+		if err != nil {
+			t.Fatalf("held reader Get failed after compaction: %v", err)
+		}
+		if !found {
+			t.Fatal("held reader should still find key from compacted SST")
+		}
+		if string(val) != "v2" {
+			t.Fatalf("held reader value = %q, want v2", val)
+		}
+	}
+
+	val, err := db.Get([]byte("stable"))
+	if err != nil {
+		t.Fatalf("live Get after compaction: %v", err)
+	}
+	if string(val) != "v2" {
+		t.Fatalf("live value = %q, want v2", val)
 	}
 }

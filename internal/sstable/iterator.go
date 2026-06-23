@@ -141,10 +141,7 @@ func (it *Iterator) advance() {
 
 // Path returns the on-disk path of the SSTable.
 func (r *Reader) Path() string {
-	if r.file == nil {
-		return ""
-	}
-	return r.file.Name()
+	return r.path
 }
 
 // MergeReaders writes the union of readers to w. Readers must be ordered oldest
