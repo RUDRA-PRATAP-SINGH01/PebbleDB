@@ -44,11 +44,10 @@ flowchart TB
     FG -.->|maybe compact| CG
 ```
 
-Source: [../diagrams/concurrency.mmd](../diagrams/concurrency.mmd)
 
 ## Scan isolation
 
-`Scan` uses `memtable.Snapshot()` — copy under brief `RLock`, iterate without lock. See [../postmortems/scan-lock-contention.md](../postmortems/scan-lock-contention.md).
+`Scan` uses `memtable.Snapshot()` — copy under brief `RLock`, iterate without lock.
 
 Point-in-time semantics:
 
@@ -73,8 +72,3 @@ Point-in-time semantics:
 - Lock-free memtable (skip list already has `RWMutex`)
 - Single-writer WAL with multiple readers without `db.mu`
 - RCU for `sstables` slice — I use copy + atomic pointer instead
-
-## Related
-
-- [../postmortems/compaction-race.md](../postmortems/compaction-race.md)
-- [../postmortems/shutdown-ordering.md](../postmortems/shutdown-ordering.md)

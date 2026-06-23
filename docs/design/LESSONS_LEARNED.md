@@ -38,7 +38,7 @@ SST readers need refcounts. Index removal is not destruction.
 
 ## Scan isolation has a memory cost
 
-Snapshot copy was the right first fix. MVCC would be the production fix. I document the cost instead of hiding it.
+Snapshot copy was the right first fix. MVCC would be the production fix. Large memtables make scan expensive.
 
 ## Do not glob the data directory for truth
 
@@ -51,13 +51,3 @@ When I am unsure if a file is garbage, I move it aside. Debugging storage withou
 ## Scope control enabled depth
 
 Saying no to replication and SQL let me finish recovery. Breadth without depth would have produced a demo, not an engine.
-
-## Documentation should explain failures
-
-The postmortems in `docs/postmortems/` are the most valuable pages for reviewers. They show I diagnosed real problems.
-
-## Related
-
-- [EVOLUTION.md](EVOLUTION.md)
-- [TRADEOFFS.md](TRADEOFFS.md)
-- [../postmortems/](../postmortems/)

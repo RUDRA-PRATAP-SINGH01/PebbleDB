@@ -22,7 +22,6 @@ flowchart TD
     L --> M["start batchFlusher + flusher + compactor"]
 ```
 
-Source: [../diagrams/recovery.mmd](../diagrams/recovery.mmd)
 
 ## wal.flush checkpoint
 
@@ -65,10 +64,3 @@ Malformed filenames (`sst_badname.sst`) are skipped — commit `0a7a5fa`.
 | `flush_after_wal_truncate` | truncate completed |
 | `compact_after_manifest` | merged set committed |
 | `compact_after_delete_old` | old files removed |
-
-See [../testing/CRASH_TESTING.md](../testing/CRASH_TESTING.md).
-
-## Related postmortems
-
-- [../postmortems/wal-replay-bug.md](../postmortems/wal-replay-bug.md)
-- [../postmortems/manifest-consistency.md](../postmortems/manifest-consistency.md)

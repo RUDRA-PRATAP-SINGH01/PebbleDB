@@ -25,7 +25,7 @@ The race detector stack always showed:
 1. Goroutine A: `Get` → `Ref` → block read.
 2. Goroutine B: compaction → `Close` / `Discard` on same reader.
 
-Commit `cfbbf5a` (`fix(close,sstable): stop compaction before closing SST readers to fix -race CI`) documents the fix. Related hardening in `0b2baf0`.
+Fixed in `cfbbf5a` and `0b2baf0`.
 
 # Root Cause
 

@@ -127,9 +127,3 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 **Lesson.** Shutdown paths need the same attention as write paths.
 
 ---
-
-## Where I am now
-
-PebbleDB is a complete embedded LSM for learning and experimentation. The remaining gaps I care about are leveled compaction, MVCC, and fuzz testing — not more README length.
-
-See [MAJOR_MILESTONES.md](../timeline/MAJOR_MILESTONES.md) for dates.

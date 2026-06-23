@@ -93,8 +93,3 @@ Rejected: `os.Remove` on open (destroys forensic evidence).
 Windows `os.Rename` with open handles caused flaky CI. I test ubuntu + macos only in `.github/workflows/ci.yml`.
 
 Rejected: fighting CI on windows-latest for a project I deploy on Linux.
-
-## Related
-
-- [TRADEOFFS.md](TRADEOFFS.md)
-- [EVOLUTION.md](EVOLUTION.md)

@@ -30,7 +30,7 @@ I expose three levels intentionally:
 2. **`Sync()`** — barrier for prior async writes.
 3. **`SyncWrites`** — per-op fsync.
 
-I document this in CLI help and benchmarks. Misinterpreting default `Put` as durable was a lesson from my own early misuse.
+CLI help and benchmarks describe async vs sync writes. Default `Put` returning before fsync was misleading until I added `Sync()`.
 
 ## Teaching vs production
 
@@ -40,10 +40,3 @@ I would not ship PebbleDB as a multi-tenant production database without:
 - MVCC or snapshot timestamps
 - Rigorous fuzzing / Jepsen-style testing
 - Operational metrics and backpressure
-
-I am honest about that limit in the root README.
-
-## Related
-
-- [DECISIONS.md](DECISIONS.md)
-- [LESSONS_LEARNED.md](LESSONS_LEARNED.md)

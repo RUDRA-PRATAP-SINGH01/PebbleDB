@@ -20,7 +20,6 @@ flowchart TD
     MORE -->|no| UNLOCK["compactMu.Unlock"]
 ```
 
-Source: [../diagrams/compaction.mmd](../diagrams/compaction.mmd)
 
 ## Merge semantics
 
@@ -55,7 +54,6 @@ sequenceDiagram
     F->>WS: remove wal.flush
 ```
 
-Source: [../diagrams/flush.mmd](../diagrams/flush.mmd)
 
 ## Retry policy
 
@@ -66,8 +64,3 @@ Compaction errors set background `compaction` error, sleep 100ms, retry. Unlike 
 ## Known weakness
 
 Oldest-2 size-tiering has unbounded read amplification vs leveled compaction. I accept that for project scope.
-
-## Related
-
-- [../postmortems/compaction-race.md](../postmortems/compaction-race.md)
-- [../postmortems/manifest-consistency.md](../postmortems/manifest-consistency.md)

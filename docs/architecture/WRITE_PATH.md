@@ -31,7 +31,6 @@ sequenceDiagram
     FL->>FL: queue memtable, signal flusher
 ```
 
-Source: [../diagrams/write-path.mmd](../diagrams/write-path.mmd)
 
 ## Group commit (default)
 
@@ -88,9 +87,3 @@ I rejected blocking reads on flush failure — existing SST + memtable data rema
 | Memtable before WAL | Crash loses acknowledged writes even after fsync story breaks |
 | Per-write fsync only | ~20× lower write throughput in my measurements |
 | Multiple active memtables without queue | Second flush while first runs lost entries before `pendingFlush` queue |
-
-## Related
-
-- [WAL_DESIGN.md](WAL_DESIGN.md)
-- [../postmortems/wal-replay-bug.md](../postmortems/wal-replay-bug.md)
-- [FLUSH in COMPACTION.md](COMPACTION.md) via flush lifecycle

@@ -41,7 +41,6 @@ flowchart LR
     NEW["Snapshot copy under brief RLock"] --> OK["Put proceeds"]
 ```
 
-See [../diagrams/scan.mmd](../diagrams/scan.mmd).
 
 # Verification
 
@@ -50,5 +49,5 @@ See [../diagrams/scan.mmd](../diagrams/scan.mmd).
 
 # Lessons Learned
 
-- Correctness and liveness trade off even in a school project.
-- I ask "what lock does this iterator hold?" before shipping any new iterator API.
+- Correctness and liveness trade off.
+- Check what lock an iterator holds before shipping it.

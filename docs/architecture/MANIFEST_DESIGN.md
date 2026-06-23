@@ -52,7 +52,6 @@ flowchart LR
     SF --> GROW
 ```
 
-Source: [../diagrams/manifest.mmd](../diagrams/manifest.mmd)
 
 ## Replay salvage
 
@@ -69,8 +68,3 @@ I rejected in-place live set files:
 - Crash mid-write corrupts entire set
 - Append + occasional snapshot compaction is simpler to reason about
 - Matches LevelDB manifest style I studied
-
-## Related
-
-- [../postmortems/manifest-consistency.md](../postmortems/manifest-consistency.md)
-- [RECOVERY.md](RECOVERY.md)

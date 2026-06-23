@@ -53,7 +53,7 @@ Comparing to RocksDB `sync=true` without matching mode is invalid.
 | RandomRead | bloom + block IO on memtable-only dataset in current bench | SST cold path (preload stays in memtable unless changed) |
 | ScanThroughput | merge iterator over memtable | concurrent writes during scan |
 
-**Note:** Current `BenchmarkRandomRead` preloads into a large memtable and does not close/reopen — it measures hot memtable reads. I document this so results are not misread as full LSM depth.
+`BenchmarkRandomRead` preloads into a large memtable and does not close/reopen. It measures hot memtable reads, not full LSM depth.
 
 ## Custom metrics
 
@@ -65,8 +65,3 @@ Comparing to RocksDB `sync=true` without matching mode is invalid.
 - Per-goroutine `rand.Rand` in parallel read bench
 - Run ≥3 times, report median
 - Watch for flush stalls during write bench — variance is expected
-
-## Related
-
-- [RESULTS.md](RESULTS.md)
-- [BENCHMARKS.md](BENCHMARKS.md)

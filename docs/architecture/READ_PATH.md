@@ -34,7 +34,6 @@ flowchart TD
     SST -->|exhausted| NF4["ErrNotFound"]
 ```
 
-Source: [../diagrams/read-path.mmd](../diagrams/read-path.mmd)
 
 ## Why I check pendingBatch
 
@@ -75,10 +74,4 @@ I still accept higher read amplification than leveled compaction engines — my 
 
 ## Background errors
 
-`Get` ignores background errors. I made that choice so a stuck flush does not brick reads of durable data. See [CONCURRENCY_MODEL.md](CONCURRENCY_MODEL.md).
-
-## Related
-
-- [SSTABLE_DESIGN.md](SSTABLE_DESIGN.md)
-- [../postmortems/compaction-race.md](../postmortems/compaction-race.md)
-- [../postmortems/reader-lifecycle.md](../postmortems/reader-lifecycle.md)
+`Get` ignores background errors. A stuck flush does not block reads of durable data.

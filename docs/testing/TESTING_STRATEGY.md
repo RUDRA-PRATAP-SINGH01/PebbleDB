@@ -52,9 +52,3 @@ Integration tests name the invariant:
 - `TestGetSurvivesCompactionWithHeldRefs`
 
 If the name is vague, the test is probably weak.
-
-## Related
-
-- [CRASH_TESTING.md](CRASH_TESTING.md)
-- [RACE_DETECTION.md](RACE_DETECTION.md)
-- [FAILURE_INJECTION.md](FAILURE_INJECTION.md)

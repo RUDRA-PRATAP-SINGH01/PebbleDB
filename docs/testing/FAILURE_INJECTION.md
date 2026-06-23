@@ -35,8 +35,3 @@ Tests call `setBackgroundErr(op, err)` on `*DB` to simulate WAL, flush, or compa
 - `ioctl` disk full simulation
 - Network partition (N/A — embedded)
 - Clock skew
-
-## Related
-
-- [CRASH_TESTING.md](CRASH_TESTING.md)
-- [../postmortems/shutdown-ordering.md](../postmortems/shutdown-ordering.md)

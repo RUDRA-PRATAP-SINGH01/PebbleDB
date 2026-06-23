@@ -76,7 +76,6 @@ flowchart TB
     LIB --> Q
 ```
 
-Source: [../diagrams/architecture.mmd](../diagrams/architecture.mmd)
 
 ## Operation matrix
 
@@ -119,15 +118,3 @@ No import cycles. I test packages in isolation before wiring `internal/db`.
 | `batchFlusher` | timer (1ms), batch size, memtable pressure | `AppendBatch` + fsync, apply to memtable |
 | `flusher` | `flushCh` (coalesced) | drain entire `pendingFlush` queue per wakeup |
 | `compactor` | `compactCh`, `compactMu` | merge oldest 2 SSTs while count ≥ threshold |
-
-## What I would tell a senior engineer in 60 seconds
-
-PebbleDB is a teaching-grade LSM with real crash recovery, manifest-tracked SST lifecycle, group-commit WAL, and race-tested compaction. I optimized for understanding durability ordering over feature breadth. The interesting parts are recovery offset logic, manifest-before-memory compaction, and reader refcounting — not the skip list itself.
-
-## Related pages
-
-- [WRITE_PATH.md](WRITE_PATH.md)
-- [READ_PATH.md](READ_PATH.md)
-- [RECOVERY.md](RECOVERY.md)
-- [CONCURRENCY_MODEL.md](CONCURRENCY_MODEL.md)
-- [../design/EVOLUTION.md](../design/EVOLUTION.md)

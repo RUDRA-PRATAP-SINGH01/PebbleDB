@@ -38,8 +38,3 @@ Race builds are slower (~10×). I run them before push, not on every edit.
 - Durability ordering bugs (need crash tests)
 - Logical recovery errors (need replay assertions)
 - File system atomicity assumptions on NFS
-
-## Related
-
-- [TESTING_STRATEGY.md](TESTING_STRATEGY.md)
-- [../postmortems/compaction-race.md](../postmortems/compaction-race.md)

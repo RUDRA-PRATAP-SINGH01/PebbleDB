@@ -57,8 +57,3 @@ go test ./internal/db -run Crash -v
 - Does not simulate partial disk writes (no LD_PRELOAD fault injection)
 - Does not test power loss mid-fsync
 - Single-machine, single-process focus
-
-## Related
-
-- [FAILURE_INJECTION.md](FAILURE_INJECTION.md)
-- [../postmortems/wal-replay-bug.md](../postmortems/wal-replay-bug.md)

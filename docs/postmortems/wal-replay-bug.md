@@ -60,7 +60,6 @@ sequenceDiagram
     O->>W: ReplayFrom(offset)
 ```
 
-See [../diagrams/recovery.mmd](../diagrams/recovery.mmd) and [../architecture/RECOVERY.md](../architecture/RECOVERY.md).
 
 # Verification
 

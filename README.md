@@ -4,7 +4,7 @@ I built PebbleDB from scratch in Go to learn how a real log-structured merge tre
 
 **Status:** educational embedded engine with real crash recovery and race-tested compaction. I do not claim production readiness.
 
-[Full documentation →](docs/README.md)
+[docs/](docs/README.md)
 
 ---
 
@@ -98,7 +98,7 @@ go test ./internal/db -run Crash -v
 
 CI (Linux + macOS): vet, lint, `-race -shuffle=on` full suite.
 
-Strategy: [docs/testing/TESTING_STRATEGY.md](docs/testing/TESTING_STRATEGY.md)
+[docs/testing/TESTING_STRATEGY.md](docs/testing/TESTING_STRATEGY.md)
 
 ---
 
@@ -108,7 +108,7 @@ Strategy: [docs/testing/TESTING_STRATEGY.md](docs/testing/TESTING_STRATEGY.md)
 go test -bench=. -benchmem -count=1 ./internal/db
 ```
 
-Default write benches use async group commit — not per-key fsync. See [docs/benchmarks/METHODOLOGY.md](docs/benchmarks/METHODOLOGY.md).
+Default write benches use async group commit, not per-key fsync. [docs/benchmarks/METHODOLOGY.md](docs/benchmarks/METHODOLOGY.md)
 
 ---
 
@@ -135,8 +135,8 @@ docs/               engineering documentation
 | System overview | [docs/architecture/SYSTEM_OVERVIEW.md](docs/architecture/SYSTEM_OVERVIEW.md) |
 | Write / read / recovery | [docs/architecture/](docs/architecture/) |
 | Design decisions | [docs/design/DECISIONS.md](docs/design/DECISIONS.md) |
-| Evolution story | [docs/design/EVOLUTION.md](docs/design/EVOLUTION.md) |
-| Postmortems (real bugs) | [docs/postmortems/](docs/postmortems/) |
+| Evolution | [docs/design/EVOLUTION.md](docs/design/EVOLUTION.md) |
+| Postmortems | [docs/postmortems/](docs/postmortems/) |
 | Testing | [docs/testing/](docs/testing/) |
 | Benchmarks | [docs/benchmarks/](docs/benchmarks/) |
 

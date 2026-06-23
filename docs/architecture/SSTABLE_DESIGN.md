@@ -26,7 +26,6 @@ flowchart TB
     FT --> FooterFields
 ```
 
-Source: [../diagrams/sstable-layout.mmd](../diagrams/sstable-layout.mmd)
 
 ## Write path
 
@@ -58,7 +57,7 @@ Keys strictly increase. Tombstone byte `1` means delete.
 
 ## Reader reference counting
 
-See [../postmortems/reader-lifecycle.md](../postmortems/reader-lifecycle.md). `Ref`/`Unref` gate `Close` of underlying file.
+`Ref`/`Unref` gate `Close` of the underlying file.
 
 ## Block cache
 
@@ -74,8 +73,3 @@ Built at write time with target false positive rate 1%. Stored between index and
 - No partitioned index/filter
 - No table properties collection
 - Whole-block read even for small values
-
-## Related
-
-- [READ_PATH.md](READ_PATH.md)
-- [COMPACTION.md](COMPACTION.md)

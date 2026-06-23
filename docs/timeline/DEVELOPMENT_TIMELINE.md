@@ -30,20 +30,3 @@ Chronological record of how PebbleDB grew. Dates approximate from git history.
 | Late Jun | Read path cache, async batch flusher (`052812d`) |
 | Late Jun | Durability API: Sync, SyncWrites, LOCK file (`0a7a5fa`) |
 | Late Jun | CLI hardening, gitignore fix, Unix flock CI fix (`f9833ad`–`95541a8`) |
-
-## Engineering problems vs commits
-
-I document **problems** in postmortems, not every commit:
-
-| Problem | Doc |
-|---------|-----|
-| WAL replay duplicated flushed data | [wal-replay-bug.md](../postmortems/wal-replay-bug.md) |
-| Manifest/memory ordering | [manifest-consistency.md](../postmortems/manifest-consistency.md) |
-| Compaction vs Get race | [compaction-race.md](../postmortems/compaction-race.md) |
-| Scan blocked writes | [scan-lock-contention.md](../postmortems/scan-lock-contention.md) |
-| Close hung or tore down early | [shutdown-ordering.md](../postmortems/shutdown-ordering.md) |
-
-## Related
-
-- [MAJOR_MILESTONES.md](MAJOR_MILESTONES.md)
-- [../design/EVOLUTION.md](../design/EVOLUTION.md)

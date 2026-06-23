@@ -48,7 +48,6 @@ sequenceDiagram
     F->>WS: remove wal.flush
 ```
 
-Source: [../diagrams/wal-truncation.mmd](../diagrams/wal-truncation.mmd)
 
 Early truncation on Windows failed when file handles stayed open — commit `78e8eb8` (`close, truncate, reopen`).
 
@@ -71,9 +70,3 @@ Oversized records fail replay instead of allocating unbounded buffers.
 | In-place truncate without copy | Windows file locking + crash safety |
 | Memtable apply before WAL fsync | breaks crash recovery |
 | Multiple WAL segments | complexity not needed at this scale |
-
-## Related
-
-- [WRITE_PATH.md](WRITE_PATH.md)
-- [RECOVERY.md](RECOVERY.md)
-- [../postmortems/wal-replay-bug.md](../postmortems/wal-replay-bug.md)
