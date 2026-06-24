@@ -12,7 +12,7 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 
 **Fixes.** Cross-platform truncate via close-truncate-reopen (`78e8eb8`). Unified `writeRecord` path for put/delete.
 
-**Lesson.** Platform file semantics are part of the storage engine.
+Platform file semantics are part of the storage engine.
 
 ---
 
@@ -26,7 +26,7 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 
 **Fixes.** Tombstone byte in block entries. Write to `.tmp`, rename on `Close`, manifest learns file only after rename.
 
-**Lesson.** Immutability starts at rename + manifest, not at last byte written.
+Immutability starts at rename + manifest, not at last byte written.
 
 ---
 
@@ -40,7 +40,7 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 
 **Fixes.** Manifest-before-memory rule. Atomic `CURRENT` update (`fd701a3`).
 
-**Lesson.** The manifest is law — disk files are candidates until listed.
+The manifest is law — disk files are candidates until listed.
 
 ---
 
@@ -54,7 +54,7 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 
 **Fixes.** Reader `Ref`/`Unref`, `readersStillPresent`, manifest rollback (`0b2baf0`, `cfbbf5a`).
 
-**Lesson.** Compaction is concurrent with reads even if SSTs are "immutable."
+Compaction is concurrent with reads even if SSTs are "immutable."
 
 ---
 
@@ -68,7 +68,7 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 
 **Fixes.** Reject `m==0`/`k==0` on decode (`054e6f7`).
 
-**Lesson.** Defensive decode on untrusted disk bytes.
+Defensive decode on untrusted disk bytes.
 
 ---
 
@@ -82,7 +82,7 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 
 **Fixes.** Replay from 0 when `wal.size < FreezeOffset`. Ignore checkpoint if SST not in manifest.
 
-**Lesson.** Recovery is a byte-range problem, not a boolean "replay WAL yes/no."
+Recovery is a byte-range problem, not a boolean "replay WAL yes/no."
 
 ---
 
@@ -96,7 +96,7 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 
 **Fixes.** Snapshot copy (`scan-lock-contention` postmortem). Drain entire queue per wakeup.
 
-**Lesson.** Liveness bugs show up in benchmarks before correctness tests fail.
+Liveness bugs show up in benchmarks before correctness tests fail.
 
 ---
 
@@ -110,7 +110,7 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 
 **Fixes.** Documented async semantics. CLI `sync` command. Removed broken bench helpers.
 
-**Lesson.** Performance work without API clarity creates operational bugs.
+Performance work without API clarity creates operational bugs.
 
 ---
 
@@ -124,6 +124,6 @@ This is the engineering story of PebbleDB — not a commit log. Each phase is so
 
 **Fixes.** Worker join timeouts. Unix `EWOULDBLOCK` → `ErrDatabaseLocked`.
 
-**Lesson.** Shutdown paths need the same attention as write paths.
+Shutdown paths need the same attention as write paths.
 
 ---

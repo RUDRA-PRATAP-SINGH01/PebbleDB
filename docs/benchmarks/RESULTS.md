@@ -52,7 +52,7 @@ Each iteration scans the listed key range once. `ops/sec` is keys/sec.
 
 - Write numbers include memtable insert + batched WAL append; no per-key fsync unless batch thresholds fire.
 - Read/scan benches preload into a large memtable and never close/reopen — they measure hot memtable paths, not full LSM depth.
-- On a prior run, group commit was ~20× faster than `SyncWrites: true` for the same payload (`01eef8e`). Re-measure on your disk before comparing to RocksDB or SQLite.
+Group commit was ~20× faster than `SyncWrites: true` on a prior run (`01eef8e`). Re-run on target hardware before comparing to other engines.
 
 Reproduce:
 

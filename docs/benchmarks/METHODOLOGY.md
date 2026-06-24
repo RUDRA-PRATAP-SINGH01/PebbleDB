@@ -1,6 +1,6 @@
 # Benchmark methodology
 
-How I run benchmarks and how to interpret numbers without lying.
+How benchmarks are run and how to read the numbers.
 
 ## Environment
 

@@ -67,8 +67,8 @@ sequenceDiagram
 - `internal/db/crash_recovery_test.go` — subprocess crash at `flush_after_manifest`, `flush_after_wal_state`, `flush_after_wal_truncate`.
 - CI runs `go test -race -shuffle=on ./...` on Linux and macOS.
 
-# Lessons Learned
+# Takeaways
 
-- Durability boundaries are **specific files at specific times**, not "the WAL exists."
-- I now ask on every recovery change: *which bytes are redundant with on-disk SST state?*
-- A 16-byte sidecar (`wal.flush`) bought me correct replay semantics without a complex multi-file WAL directory.
+- Durability boundaries are specific files at specific times, not "the WAL exists."
+- On recovery changes: which bytes are redundant with on-disk SST state?
+- A 16-byte `wal.flush` sidecar bounded replay without a multi-segment WAL.

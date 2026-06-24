@@ -7,6 +7,7 @@ Engineering notes for the LSM implementation in this repo.
 | Topic | File |
 |-------|------|
 | Architecture | [architecture/SYSTEM_OVERVIEW.md](architecture/SYSTEM_OVERVIEW.md) |
+| Invariants | [design/INVARIANTS.md](design/INVARIANTS.md) |
 | Decisions | [design/DECISIONS.md](design/DECISIONS.md) |
 | Bugs and fixes | [postmortems/](postmortems/) |
 | Evolution | [design/EVOLUTION.md](design/EVOLUTION.md) |
@@ -27,6 +28,7 @@ Engineering notes for the LSM implementation in this repo.
 
 ## Design
 
+- [INVARIANTS.md](design/INVARIANTS.md)
 - [DECISIONS.md](design/DECISIONS.md)
 - [TRADEOFFS.md](design/TRADEOFFS.md)
 - [EVOLUTION.md](design/EVOLUTION.md)

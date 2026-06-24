@@ -61,8 +61,8 @@ Flush uses `AppendNewFile` with the same manifest-first rule.
 - `manifest_test.go` — replay, rotation, concurrent append tests.
 - `TestManifestIgnoresOrphanSSTAfterCompactionCrash` — orphan SST must not affect reads.
 
-# Lessons Learned
+# Takeaways
 
-- I treat manifest fsync as the moment a file becomes **live**. Everything before that is provisional.
-- Rolling back manifest on reader invalidation is cheaper than debugging silent data loss later.
-- `quarantine/` for orphan SSTs is safer than `os.Remove` during recovery — I can inspect mistakes.
+- Manifest fsync is when an SST becomes **live**; everything before that is provisional.
+- Manifest rollback on reader invalidation beats silent data loss.
+- `quarantine/` over `os.Remove` for orphan SSTs during recovery.

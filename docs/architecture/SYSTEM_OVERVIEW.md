@@ -1,6 +1,6 @@
 # System overview
 
-I built PebbleDB as a single-node embedded LSM key-value store in Go. It is my own implementation — not a fork of RocksDB or CockroachDB's Pebble. I wanted every durability boundary visible in code I could explain in an interview without hand-waving.
+I built PebbleDB as a single-node embedded LSM key-value store in Go — not a fork of RocksDB or CockroachDB's Pebble.
 
 ## What PebbleDB is
 
@@ -12,7 +12,7 @@ I built PebbleDB as a single-node embedded LSM key-value store in Go. It is my o
 | Concurrency | Single writer (`db.mu`), concurrent `Get`/`Scan` with snapshots |
 | Process model | One process per database directory (`LOCK` file) |
 
-I deliberately excluded replication, transactions, MVCC, column families, and a network server. Scope control let me finish recovery and compaction correctly.
+No replication, transactions, MVCC, column families, or network server.
 
 ## Layered architecture
 

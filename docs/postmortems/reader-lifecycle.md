@@ -42,7 +42,7 @@ Block cache keys include file path + offset (commit `0a7a5fa` area) so recycled 
 - Race CI on compaction + get tests.
 - Manual Windows testing with flush/compaction loops.
 
-# Lessons Learned
+# Takeaways
 
-- File handle lifetime is a first-class API in embedded storage — not an implementation detail.
-- I model reader lifecycle like Arc: drop from index ≠ destroy object.
+- File handle lifetime is part of the public contract for embedded storage.
+- Dropping a reader from the index does not destroy it while refs remain.

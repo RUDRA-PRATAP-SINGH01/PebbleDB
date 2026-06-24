@@ -1,6 +1,6 @@
 # Context
 
-When I added `Scan`, I wanted a consistent view of memtable keys. My first implementation was correct for isolation semantics but unacceptable for write throughput.
+First `Scan` implementation held locks too long — correct isolation, blocked all writes.
 
 # Original Design
 
@@ -18,7 +18,7 @@ Holding a read lock gives a stable view of the skip list without copying data. T
 
 # Investigation
 
-I profiled lock contention and read how RocksDB/pebble expose iterators: snapshot sequences or copy-on-read for memtables. I did not need MVCC — I only needed point-in-time for one iterator.
+Profiled lock contention; copied memtable snapshot under brief lock (no MVCC needed for point-in-time iterator).
 
 # Root Cause
 
@@ -47,7 +47,6 @@ flowchart LR
 - `scan_snapshot_test.go` — `TestScanDoesNotBlockWrites`
 - `scan_test.go` — point-in-time semantics
 
-# Lessons Learned
+# Takeaways
 
-- Correctness and liveness trade off.
-- Check what lock an iterator holds before shipping it.
+- Iterator lock scope affects write throughput, not just correctness.

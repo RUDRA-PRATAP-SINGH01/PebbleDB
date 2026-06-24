@@ -47,7 +47,7 @@ I introduced explicit reader lifecycle:
 - `go test -race -count=1 -shuffle=on ./...` in CI (ubuntu + macos)
 - `get_test.go` — `TestLookupSSTReadersSkipsClosed`
 
-# Lessons Learned
+# Takeaways
 
-- In an LSM, **immutable** does not mean **unreferenced**. Readers can outlive index updates.
-- I run race CI on every push now; Windows file locking makes these bugs obvious.
+- Immutable SSTs can still be referenced by in-flight `Get`/`Scan`.
+- Race CI on Linux/macOS; Windows file locking surfaces handle lifetime bugs early.

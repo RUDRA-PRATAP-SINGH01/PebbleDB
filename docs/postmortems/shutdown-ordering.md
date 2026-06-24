@@ -65,8 +65,8 @@ sequenceDiagram
 - `close_test.go` — wal size error, stuck flush, wal append failure
 - `background_err_test.go` — `TestCloseIncompleteWhenWalSizeFails`
 
-# Lessons Learned
+# Takeaways
 
-- Shutdown is a state machine, not a destructor.
-- Returning an error from `Close` is better than deadlocking or corrupting metadata.
-- I release directory `LOCK` in a defer even on incomplete close so the process can exit.
+- Shutdown is a state machine with bounded waits, not a single destructor call.
+- `ErrCloseIncomplete` beats deadlock or tearing down WAL/manifest under running workers.
+- Directory `LOCK` releases in defer even on incomplete close.

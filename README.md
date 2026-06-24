@@ -237,6 +237,7 @@ Async group commit on this machine: ~34k–38k puts/sec (128-byte values). Paral
 | Topic | Link |
 |-------|------|
 | Architecture | [docs/architecture/](docs/architecture/) |
+| System invariants | [docs/design/INVARIANTS.md](docs/design/INVARIANTS.md) |
 | Design decisions | [docs/design/DECISIONS.md](docs/design/DECISIONS.md) |
 | How it evolved | [docs/design/EVOLUTION.md](docs/design/EVOLUTION.md) |
 | Bug postmortems | [docs/postmortems/](docs/postmortems/) |

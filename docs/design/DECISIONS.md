@@ -1,6 +1,6 @@
 # Engineering decisions
 
-This page records decisions I made deliberately — with alternatives I rejected. It is not a changelog.
+Decisions with alternatives rejected.
 
 ## LSM over B-tree
 

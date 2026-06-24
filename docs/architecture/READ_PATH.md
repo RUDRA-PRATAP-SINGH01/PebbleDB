@@ -1,6 +1,6 @@
 # Read path
 
-`Get` is a layered lookup: newest wins. I optimized for correctness first (tombstones, pending batch, compaction races), then bloom filters to skip cold SST files.
+`Get` is a layered lookup: newest wins. Tombstones, pending batch, and compaction races come before bloom filters for skipping cold SST files.
 
 ## Lookup order
 
