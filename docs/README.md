@@ -2,6 +2,29 @@
 
 Engineering notes for the LSM implementation in this repo.
 
+## Repository layout
+
+```
+PebbleDB/
+├── cmd/pebbledb/          CLI (put, get, delete, scan, sync)
+├── internal/
+│   ├── db/                Database API, workers, recovery
+│   ├── wal/               Write-ahead log
+│   ├── memtable/          Skip-list memtable
+│   ├── sstable/           Immutable on-disk tables
+│   ├── manifest/          Live SST set log
+│   ├── iterator/          K-way merge iterator
+│   └── bloom/             Per-SST bloom filters
+├── docs/                  Architecture, design, testing, diagrams
+├── .github/workflows/     CI (ubuntu + macos)
+├── go.mod
+├── README.md
+├── CONTRIBUTING.md
+└── LICENSE
+```
+
+Library import path: `github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db`
+
 ## Start here
 
 | Topic | File |
@@ -63,4 +86,4 @@ Engineering notes for the LSM implementation in this repo.
 
 ## Diagrams
 
-Mermaid sources: [diagrams/](diagrams/)
+- [diagrams/README.md](diagrams/README.md) — Mermaid source index

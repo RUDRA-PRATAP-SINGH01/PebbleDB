@@ -13,7 +13,7 @@ Benchmarks live in `internal/db/bench_test.go`.
 ## Run
 
 ```bash
-go test -bench=. -benchmem -count=1 ./internal/db
+go test ./internal/db -run=NonExistent -bench=. -benchmem -count=1
 ```
 
 PowerShell: `go test ./internal/db -run=NonExistent "-bench=." -benchmem -count=1`

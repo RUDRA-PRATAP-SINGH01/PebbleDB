@@ -4,7 +4,7 @@ I built PebbleDB from scratch in Go — a single-node embedded LSM key-value sto
 
 **Status:** educational embedded engine. Real crash recovery, race-tested compaction. Not production-ready.
 
-Full docs: [docs/](docs/README.md)
+Full docs: [docs/](docs/README.md) · [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
 
@@ -242,6 +242,7 @@ Async group commit on this machine: ~34k–38k puts/sec (128-byte values). Paral
 | How it evolved | [docs/design/EVOLUTION.md](docs/design/EVOLUTION.md) |
 | Bug postmortems | [docs/postmortems/](docs/postmortems/) |
 | Diagrams (Mermaid) | [docs/diagrams/](docs/diagrams/) |
+| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
 ---
 

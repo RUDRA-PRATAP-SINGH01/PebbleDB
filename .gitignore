@@ -1,11 +1,21 @@
-# Built CLI binaries (root and bin/ only — do not match cmd/pebbledb/)
+# Binaries
 /pebbledb
 /pebbledb.exe
-/bin/pebbledb
-/bin/pebbledb.exe
+/bin/
 
-*.sst
+# Local database directories (CLI default and test debris)
 pebbledb-data/
-_flushtest/
 data/
+_flushtest/
+
+# SST files from local runs
+*.sst
+
+# Test and benchmark output
+coverage
 coverage.out
+bench-results.txt
+test-output.json
+
+# Go test binaries
+*.test
