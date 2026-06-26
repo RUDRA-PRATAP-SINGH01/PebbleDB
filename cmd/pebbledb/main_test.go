@@ -14,8 +14,40 @@ func TestCLIHelp(t *testing.T) {
 	if err := run([]string{"help"}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stderr.String(), "Commands:") {
-		t.Fatalf("help output missing commands: %q", stderr.String())
+	if !strings.Contains(stdout.String(), "Commands:") {
+		t.Fatalf("help output missing commands: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestCLIFlagHelp(t *testing.T) {
+	for _, args := range [][]string{{"-h"}, {"--help"}} {
+		var stdout, stderr bytes.Buffer
+		if err := run(args, &stdout, &stderr); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !strings.Contains(stdout.String(), "Commands:") {
+			t.Fatalf("%v: help missing from stdout: %q", args, stdout.String())
+		}
+	}
+}
+
+func TestCLIDatabaseLockedMessage(t *testing.T) {
+	dir := t.TempDir()
+	db1, err := db.Open(db.Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db1.Close()
+	})
+
+	var stdout, stderr bytes.Buffer
+	err = run([]string{"-dir", dir, "get", "k"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected locked error")
+	}
+	if !strings.Contains(err.Error(), "locked") {
+		t.Fatalf("error = %v, want locked message", err)
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db"
 )
 
+var errCLIHelp = errors.New("cli: help")
+
 type exitCodeError struct {
 	code int
 	msg  string
@@ -26,7 +28,10 @@ type cliConfig struct {
 }
 
 func run(args []string, stdout, stderr io.Writer) (err error) {
-	cfg, cmdArgs, err := parseCLI(args, stderr)
+	cfg, cmdArgs, err := parseCLI(args, stdout, stderr)
+	if errors.Is(err, errCLIHelp) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -35,9 +40,8 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		return &exitCodeError{code: 1, msg: "missing command"}
 	}
 
-	switch cmdArgs[0] {
-	case "help", "-h", "--help":
-		printUsage(stderr)
+	if isHelpToken(cmdArgs[0]) {
+		printUsage(stdout)
 		return nil
 	}
 
@@ -46,6 +50,12 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		SyncWrites: cfg.syncWrites,
 	})
 	if err != nil {
+		if errors.Is(err, db.ErrDatabaseLocked) {
+			return fmt.Errorf(
+				"database %q is locked by another process — close the other PebbleDB instance or use a different -dir",
+				cfg.dir,
+			)
+		}
 		return err
 	}
 	defer func() {
@@ -57,10 +67,15 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 	return runCommand(database, cmdArgs, stdout, stderr)
 }
 
-func parseCLI(args []string, stderr io.Writer) (cliConfig, []string, error) {
+func parseCLI(args []string, stdout, stderr io.Writer) (cliConfig, []string, error) {
 	cfg := cliConfig{
 		dir:        envOr("PEBBLEDB_DIR", "./pebbledb-data"),
 		syncWrites: envBool("PEBBLEDB_SYNC_WRITES"),
+	}
+
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printUsage(stdout)
+		return cliConfig{}, nil, errCLIHelp
 	}
 
 	fs := flag.NewFlagSet("pebbledb", flag.ContinueOnError)
@@ -69,12 +84,30 @@ func parseCLI(args []string, stderr io.Writer) (cliConfig, []string, error) {
 	syncWrites := fs.Bool("sync-writes", cfg.syncWrites, "fsync WAL before each Put/Delete returns")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printUsage(stdout)
+			return cfg, nil, errCLIHelp
+		}
 		return cliConfig{}, nil, err
 	}
 
 	cfg.dir = *dir
 	cfg.syncWrites = *syncWrites
-	return cfg, fs.Args(), nil
+	cmdArgs := fs.Args()
+	if len(cmdArgs) > 0 && isHelpToken(cmdArgs[0]) {
+		printUsage(stdout)
+		return cfg, nil, errCLIHelp
+	}
+	return cfg, cmdArgs, nil
+}
+
+func isHelpToken(s string) bool {
+	switch s {
+	case "help", "-h", "--help":
+		return true
+	default:
+		return false
+	}
 }
 
 func runCommand(database *db.DB, args []string, stdout, stderr io.Writer) (err error) {
