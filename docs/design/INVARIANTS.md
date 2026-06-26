@@ -372,7 +372,7 @@ If new records are appended to `pendingBatch` while the batch flusher holds an i
 
 ### Invariant W2 — `Put` return does not imply durability unless `SyncWrites` or batch sync path completed
 
-Default: `Put` may return while records sit in `pendingBatch` or before timer-based flush. `Sync()` drains `pendingBatch` via `awaitBatchPersist` and waits for any in-flight WAL batch (`batchPersistWG`) before returning. `SyncWrites: true` forces persist per qualifying write.
+Default: `Put` may return while records sit in `pendingBatch` or before timer-based flush. `Sync()` drains `pendingBatch` via `awaitBatchPersist` and waits for any in-flight WAL batch (`batchPersist` barrier) before returning. `SyncWrites: true` forces persist per qualifying write.
 
 **Enforced by.** `write.go`, `sync.go`, CLI `sync` command.
 

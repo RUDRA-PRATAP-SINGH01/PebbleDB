@@ -22,7 +22,7 @@ func (db *DB) Sync() error {
 		if err := db.awaitBatchPersist(); err != nil {
 			return err
 		}
-		db.batchPersistWG.Wait()
+		db.batchPersist.wait()
 
 		db.mu.Lock()
 		empty := len(db.pendingBatch) == 0

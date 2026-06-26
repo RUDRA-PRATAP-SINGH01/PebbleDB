@@ -63,7 +63,7 @@ type DB struct {
 	batchSyncCh     chan chan error
 	batchStop       chan struct{}
 	batchDone       chan struct{}
-	batchPersistWG  sync.WaitGroup
+	batchPersist    *batchPersistBarrier
 	batchStopErr    error
 	batchFlushDelay time.Duration
 }
@@ -172,6 +172,7 @@ func Open(opts Options) (*DB, error) {
 		batchSyncCh:             make(chan chan error, 8),
 		batchStop:               make(chan struct{}),
 		batchDone:               make(chan struct{}),
+		batchPersist:            newBatchPersistBarrier(),
 		batchFlushDelay:         batchFlushDelay,
 		pendingBatch:            make([]wal.Record, 0, batchMaxRecords),
 	}

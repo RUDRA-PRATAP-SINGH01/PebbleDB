@@ -113,8 +113,8 @@ func (db *DB) flushPendingBatch() error {
 	batch := takePendingBatchLocked(db)
 	db.mu.Unlock()
 
-	db.batchPersistWG.Add(1)
-	defer db.batchPersistWG.Done()
+	db.batchPersist.begin()
+	defer db.batchPersist.end()
 
 	if err := db.wal.AppendBatch(batch); err != nil {
 		db.mu.Lock()

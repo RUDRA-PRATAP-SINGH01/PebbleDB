@@ -271,6 +271,7 @@ func TestWALAppendErrorBlocksWrites(t *testing.T) {
 		db.mu.Lock()
 		db.closed = true
 		db.mu.Unlock()
+		_ = db.stopBatchFlusher()
 		if db.manifest != nil {
 			_ = db.manifest.Close()
 		}
