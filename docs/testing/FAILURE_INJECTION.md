@@ -22,7 +22,14 @@ Tests call `setBackgroundErr(op, err)` on `*DB` to simulate WAL, flush, or compa
 
 ## Flush queue injection
 
-`TestFlushRetryCapUnblocksQueue` — close manifest, force flush retries, verify queue drains after retry cap (`maxFlushRetries`).
+`TestFlushNeverAbandonsQueueEntry` — close manifest, force flush retries, verify the queue entry is never dropped (only successful flush removes it).
+
+## WAL / disk faults
+
+| Test | Invariant |
+|------|-----------|
+| `TestWALAppendErrorBlocksWrites` | WAL close blocks Put, Get still works |
+| `TestSyncWaitsForInFlightBatch` | `Sync()` waits for batch flusher mid-fsync |
 
 ## Manifest / disk faults
 
@@ -32,6 +39,6 @@ Tests call `setBackgroundErr(op, err)` on `*DB` to simulate WAL, flush, or compa
 
 ## What I do not inject yet
 
-- `ioctl` disk full simulation
+- Kernel-level `ENOSPC` simulation (WAL close approximates append failure)
 - Network partition (N/A — embedded)
 - Clock skew

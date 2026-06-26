@@ -1,7 +1,5 @@
 package iterator
 
-import "bytes"
-
 type source struct {
 	it       Iterator
 	priority int
@@ -84,69 +82,29 @@ func (m *MergeIterator) Err() error {
 }
 
 func (m *MergeIterator) advance() error {
-	for {
-		minKey := m.minKey()
-		if minKey == nil {
-			m.valid = false
-			m.key = nil
-			m.value = nil
-			return m.err
-		}
-
-		bestPri := -1
-		var winnerKey, winnerVal []byte
-		winnerTomb := false
-		var toAdvance []Iterator
-
-		for _, s := range m.sources {
-			if !s.it.Valid() {
-				continue
-			}
-			if !bytes.Equal(s.it.Key(), minKey) {
-				continue
-			}
-			if s.priority > bestPri {
-				bestPri = s.priority
-				winnerKey = s.it.Key()
-				winnerVal = s.it.Value()
-				winnerTomb = s.it.IsTombstone()
-			}
-			toAdvance = append(toAdvance, s.it)
-		}
-
-		for _, it := range toAdvance {
-			if err := it.Next(); err != nil {
-				m.err = err
-				m.valid = false
-				return err
-			}
-		}
-
-		if winnerTomb {
-			continue
-		}
-
-		m.key = append(m.key[:0], winnerKey...)
-		if winnerVal == nil {
-			m.value = nil
-		} else {
-			m.value = append(m.value[:0], winnerVal...)
-		}
-		m.valid = true
-		return nil
+	key, value, _, ok, err := mergeStep(m.sources, true)
+	if err != nil {
+		m.err = err
+		m.valid = false
+		return err
 	}
+	if !ok {
+		m.valid = false
+		m.key = nil
+		m.value = nil
+		return m.err
+	}
+
+	m.key = append(m.key[:0], key...)
+	if value == nil {
+		m.value = nil
+	} else {
+		m.value = append(m.value[:0], value...)
+	}
+	m.valid = true
+	return nil
 }
 
 func (m *MergeIterator) minKey() []byte {
-	var minKey []byte
-	for _, s := range m.sources {
-		if !s.it.Valid() {
-			continue
-		}
-		k := s.it.Key()
-		if minKey == nil || bytes.Compare(k, minKey) < 0 {
-			minKey = k
-		}
-	}
-	return minKey
+	return minKeyAcrossSources(m.sources)
 }

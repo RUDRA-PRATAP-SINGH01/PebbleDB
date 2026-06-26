@@ -60,9 +60,12 @@ type DB struct {
 	batchSizeBytes int
 	batchTimer     *time.Timer
 	batchFlushCh   chan struct{}
-	batchSyncCh    chan chan error
-	batchStop      chan struct{}
-	batchDone      chan struct{}
+	batchSyncCh     chan chan error
+	batchStop       chan struct{}
+	batchDone       chan struct{}
+	batchPersistWG  sync.WaitGroup
+	batchStopErr    error
+	batchFlushDelay time.Duration
 }
 
 type flushQueueEntry struct {
@@ -88,9 +91,20 @@ type Options struct {
 	// BlockWritesOnFlushError blocks new writes after a persistent flush failure.
 	// Defaults to true. Reads continue from existing SST/memtable data.
 	BlockWritesOnFlushError *bool
+	// BatchFlushDelay is the group-commit timer before a pending WAL batch is
+	// flushed; zero uses 1ms.
+	BatchFlushDelay time.Duration
 }
 
-// Open opens or creates a database at the given directory.
+// Open opens or creates a database at dir, recovering from WAL and manifest if
+// the directory already exists.
+//
+// Durability: async Put/Delete (default) return before WAL fsync; call Sync() or
+// set SyncWrites for a per-write barrier. Crash recovery replays the WAL tail
+// not yet captured in flushed SSTables (see wal.flush checkpoint).
+//
+// Only one process may open a directory at a time (LOCK file). Open is not safe
+// to call concurrently on the same *DB.
 func Open(opts Options) (*DB, error) {
 	if opts.Dir == "" {
 		return nil, ErrEmptyDir
@@ -121,6 +135,11 @@ func Open(opts Options) (*DB, error) {
 	}
 
 	walLimits := opts.WALReplayLimits.WithDefaults()
+
+	batchFlushDelay := opts.BatchFlushDelay
+	if batchFlushDelay <= 0 {
+		batchFlushDelay = batchFlushDelayDefault
+	}
 
 	blockWritesOnFlushError := true
 	if opts.BlockWritesOnFlushError != nil {
@@ -153,6 +172,7 @@ func Open(opts Options) (*DB, error) {
 		batchSyncCh:             make(chan chan error, 8),
 		batchStop:               make(chan struct{}),
 		batchDone:               make(chan struct{}),
+		batchFlushDelay:         batchFlushDelay,
 		pendingBatch:            make([]wal.Record, 0, batchMaxRecords),
 	}
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"log"
 	"os"
 	"sort"
 	"sync"
@@ -235,7 +236,9 @@ func (r *Reader) closeFile() error {
 	r.file = nil
 	r.fileClosed.Store(true)
 	if r.discardPending.Load() && r.path != "" {
-		_ = os.Remove(r.path)
+		if err := os.Remove(r.path); err != nil && !os.IsNotExist(err) {
+			log.Printf("pebbledb: remove discarded SST %s: %v", r.path, err)
+		}
 	}
 	return err
 }

@@ -57,7 +57,7 @@ flowchart TB
 
 **Write flow:** `Put` → WAL batch → memtable → background flush → SST + manifest.
 
-**Read flow:** `Get` walks memtable → frozen flush queue → SSTables (newest wins, bloom-filtered).
+**Read flow:** `Get` walks `pendingBatch` → active memtable → frozen flush queue → SSTables (newest wins, bloom-filtered).
 
 **Recovery:** load manifest + SSTables first, replay only the WAL tail not yet flushed.
 
@@ -115,10 +115,10 @@ Details: [docs/architecture/WRITE_PATH.md](docs/architecture/WRITE_PATH.md)
 
 ```mermaid
 flowchart TD
-    G["Get(key)"] --> A["active memtable"]
+    G["Get(key)"] --> B["pendingBatch (unflushed WAL)"]
+    B -->|miss| A["active memtable"]
     A -->|miss| P["pendingFlush queue"]
-    P -->|miss| B["pendingBatch"]
-    B -->|miss| S["SSTables newest→oldest"]
+    P -->|miss| S["SSTables newest→oldest"]
     S --> BL["bloom filter"]
     BL --> BK["block read"]
 ```
@@ -167,13 +167,26 @@ pebbledb-data/
 | Area | Supported |
 |------|-----------|
 | Writes | Group commit WAL, `Sync()`, `SyncWrites`, memtable flush |
-| Reads | Layered `Get`, per-SST bloom, optional block cache |
+| Reads | Layered `Get`, per-SST bloom, optional block cache (`BlockCacheSize`) |
 | Scan | Merge iterator, tombstone filtering, point-in-time snapshot |
 | Compaction | Oldest-2 size-tiered merge when SST count ≥ 4 |
 | Recovery | Manifest-driven load, `wal.flush` replay offset, orphan quarantine |
 | Concurrency | Concurrent `Get`/`Scan`; single writer; `-race` CI on Linux/macOS |
 | Crash tests | Subprocess crash at flush/compaction boundaries |
 | CLI | `put`, `get`, `delete`, `scan`, `sync` |
+
+### `Options` (library)
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `Dir` | required | Database directory |
+| `MemtableSize` | 4 MiB | Active memtable size before flush |
+| `CompactionThreshold` | 4 (`-1` disables) | Live SST count triggering compaction |
+| `SyncWrites` | false | Fsync WAL before each Put/Delete returns |
+| `BlockCacheSize` | 32 MiB (`<0` disables) | LRU cache for SST data blocks |
+| `BatchFlushDelay` | 1ms | Group-commit timer |
+| `BlockWritesOnFlushError` | true | Block writes after persistent flush/WAL failure |
+| `WALReplayLimits` | safe defaults | Max WAL/key/value sizes on replay |
 
 **Not included:** replication, transactions, MVCC, SQL, network server.
 

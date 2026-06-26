@@ -5,24 +5,25 @@
 ## Lookup order
 
 ```
-1. active memtable
-2. pendingFlush (newest → oldest)
-3. pendingBatch (records not yet applied to memtable)
+1. pendingBatch (records accepted by Put but not yet applied to memtable)
+2. active memtable
+3. pendingFlush (newest → oldest)
 4. sstables (newest → oldest), bloom-filtered
 ```
 
 ```mermaid
 flowchart TD
     START["Get(key)"] --> RLOCK["db.mu RLock"]
-    RLOCK --> ACTIVE{"active memtable?"}
+    RLOCK --> PENDING{"pendingBatch (unflushed WAL)?"}
+    PENDING -->|hit| RET0["return value"]
+    PENDING -->|tombstone| NF0["ErrNotFound"]
+    PENDING -->|miss| ACTIVE{"active memtable?"}
     ACTIVE -->|hit value| RET1["return value"]
     ACTIVE -->|tombstone| NF1["ErrNotFound"]
     ACTIVE -->|miss| PEND{"pendingFlush newest→oldest"}
     PEND -->|hit| RET2["return value"]
     PEND -->|tombstone| NF2["ErrNotFound"]
-    PEND -->|miss| PENDING{"pendingBatch (unflushed WAL)?"}
-    PENDING -->|hit| RET3["return value"]
-    PENDING -->|miss| REF["copy sstables + Ref readers"]
+    PEND -->|miss| REF["copy sstables + Ref readers"]
     REF --> RUNLOCK["db.mu RUnlock"]
     RUNLOCK --> SST{"each SST newest→oldest"}
     SST --> BLOOM{"bloom MayContain?"}
@@ -35,9 +36,9 @@ flowchart TD
 ```
 
 
-## Why I check pendingBatch
+## Why I check pendingBatch first
 
-With group commit, a record can be in `pendingBatch` after `Put` returns but before memtable apply. `Get` must see it or I would violate read-your-writes within a process.
+With group commit, a record can be in `pendingBatch` after `Put` returns but before memtable apply. `Get` must see it or I would violate read-your-writes within a process. `pendingBatch` is newer than the active memtable for keys written in the current group-commit window.
 
 ## SST search
 
@@ -53,6 +54,8 @@ After `RUnlock`:
 3. Binary search index block → load data block → scan entries.
 
 `Unref()` in defer when `Get` returns.
+
+Closed SST readers during compaction are skipped (`errors.Is(err, os.ErrClosed)`) so in-flight lookups fall through to older layers.
 
 ## Tombstones
 

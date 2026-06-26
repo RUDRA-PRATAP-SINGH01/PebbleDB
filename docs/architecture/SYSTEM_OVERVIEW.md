@@ -83,7 +83,7 @@ flowchart TB
 |-----------|---------|---------------------|
 | Put/Delete (async) | pendingBatch → WAL batch → memtable | WAL fsync in batchFlusher (not always before return) |
 | Put/Delete (`SyncWrites`) | WAL fsync per op | WAL fsync |
-| `Sync()` | drains pendingBatch | WAL fsync |
+| `Sync()` | drains pendingBatch + in-flight WAL batch | WAL fsync |
 | Flush | SST file + manifest | `manifest.AppendNewFile` fsync |
 | Compaction | merged SST + manifest | `manifest.SetFileSet` fsync |
 | Get | memtables + SST readers | none (read-only) |

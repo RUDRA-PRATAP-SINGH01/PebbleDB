@@ -53,6 +53,10 @@ func (w *WAL) Append(rec Record) error {
 // AppendBatch writes multiple records sequentially and fsyncs once at the end.
 // If any write or Sync fails, the batch is not considered durable; callers must
 // not apply records to the memtable.
+//
+// BeforeBatchSync, when set, runs immediately before fsync (tests only).
+var BeforeBatchSync func()
+
 func (w *WAL) AppendBatch(records []Record) error {
 	if len(records) == 0 {
 		return nil
@@ -63,6 +67,9 @@ func (w *WAL) AppendBatch(records []Record) error {
 		if _, err := w.appendRecordLocked(rec); err != nil {
 			return err
 		}
+	}
+	if BeforeBatchSync != nil {
+		BeforeBatchSync()
 	}
 	return w.file.Sync()
 }

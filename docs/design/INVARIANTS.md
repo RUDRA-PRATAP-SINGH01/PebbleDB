@@ -372,7 +372,7 @@ If new records are appended to `pendingBatch` while the batch flusher holds an i
 
 ### Invariant W2 — `Put` return does not imply durability unless `SyncWrites` or batch sync path completed
 
-Default: `Put` may return while records sit in `pendingBatch` or before timer-based flush. `Sync()` drains pending batch via `awaitBatchPersist`. `SyncWrites: true` forces persist per qualifying write.
+Default: `Put` may return while records sit in `pendingBatch` or before timer-based flush. `Sync()` drains `pendingBatch` via `awaitBatchPersist` and waits for any in-flight WAL batch (`batchPersistWG`) before returning. `SyncWrites: true` forces persist per qualifying write.
 
 **Enforced by.** `write.go`, `sync.go`, CLI `sync` command.
 
@@ -510,7 +510,7 @@ Per-invariant mapping for audits. Race column lists targeted tests; full suite i
 | V2 | `get.go`, `scan.go`, `sstable.Reader` Ref/Discard | `TestGetSurvivesCompactionWithHeldRefs`, `TestLookupSSTReadersSkipsClosed` | `compact_after_delete_old` | `go test -race ./...` |
 | V3 | `scan.go` | `TestScanDoesNotBlockWrites`, `TestScanIsPointInTimeSnapshot`, `scan_test.go` | — | `TestScanDoesNotBlockWrites` under `-race` |
 | W1 | `batch.go` `flushPendingBatch` | `TestRapidPutNoLossDuringAsyncFlush` | — | — |
-| W2 | `write.go`, `sync.go` | `TestSyncWritesOptionWaitsForFsync`, `TestCLIPutGetSync` | — | — |
+| W2 | `write.go`, `sync.go` | `TestSyncWritesOptionWaitsForFsync`, `TestSyncWaitsForInFlightBatch`, `TestCLIPutGetSync` | — | — |
 | C1 | `sstable` merge | `TestCompactionDropsDeletedKeys`, `TestCompactionMergesDuplicateKeys` | — | — |
 | C2 | `compactor.go` | `TestGetSurvivesCompactionWithHeldRefs` | `compact_after_manifest`, `compact_after_delete_old`, `compact_after_merge_close` | `-race` with compaction tests |
 | C3 | `compactor.go`, `background_err` | `TestCompactionDisabledWithNegativeThreshold`, `background_err_test.go` | — | — |

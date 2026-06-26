@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -337,7 +338,9 @@ func (l *Log) rotateSnapshotLocked() error {
 	l.path = newPath
 	l.recordCount = 1
 	if oldPath != newPath {
-		_ = os.Remove(oldPath)
+		if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("pebbledb: remove rotated manifest %s: %v", oldPath, err)
+		}
 	}
 	return nil
 }

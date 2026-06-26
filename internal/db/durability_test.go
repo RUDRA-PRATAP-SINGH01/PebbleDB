@@ -2,7 +2,9 @@ package db
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -126,42 +128,175 @@ func TestOpenSkipsMalformedSSTFilename(t *testing.T) {
 	defer db.Close()
 }
 
-func TestFlushRetryCapUnblocksQueue(t *testing.T) {
-	oldMax := maxFlushRetries
-	maxFlushRetries = 2
-	t.Cleanup(func() { maxFlushRetries = oldMax })
+func TestFlushNeverAbandonsQueueEntry(t *testing.T) {
+	if os.Getenv("PEBBLE_FLUSH_ABANDON_CHILD") == "1" {
+		dir := os.Getenv(crashTestDirEnv)
+		if dir == "" {
+			fmt.Fprintln(os.Stderr, "missing test dir")
+			os.Exit(1)
+		}
+		db, err := Open(Options{Dir: dir, CompactionThreshold: 1000})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "open: %v\n", err)
+			os.Exit(1)
+		}
+
+		imm := memtable.NewSkipList()
+		imm.Put([]byte("stuck"), []byte("key"))
+
+		db.mu.Lock()
+		db.pendingFlush = append(db.pendingFlush,
+			flushQueueEntry{mem: imm, walCutoff: 0},
+		)
+		db.mu.Unlock()
+
+		if err := db.manifest.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "manifest close: %v\n", err)
+			os.Exit(1)
+		}
+		db.manifest = nil
+		db.notifyFlushForce()
+
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			db.mu.RLock()
+			n := len(db.pendingFlush)
+			db.mu.RUnlock()
+			if n != 1 {
+				fmt.Fprintf(os.Stderr, "pendingFlush len = %d, want 1", n)
+				os.Exit(1)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if db.BackgroundError() == nil {
+			fmt.Fprintln(os.Stderr, "expected flush background error")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	dir := t.TempDir()
-	db, err := Open(Options{Dir: dir, CompactionThreshold: 1000})
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFlushNeverAbandonsQueueEntry$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"PEBBLE_FLUSH_ABANDON_CHILD=1",
+		crashTestDirEnv+"="+dir,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("child failed: %v\n%s", err, out)
+	}
+}
+
+func TestSyncWaitsForInFlightBatch(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(Options{
+		Dir:             dir,
+		MemtableSize:    1 << 30,
+		BatchFlushDelay: 50 * time.Millisecond,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer db.Close()
 
-	db.mu.Lock()
-	db.pendingFlush = append(db.pendingFlush,
-		flushQueueEntry{mem: memtable.NewSkipList(), walCutoff: 0},
-		flushQueueEntry{mem: memtable.NewSkipList(), walCutoff: 0},
-	)
-	db.mu.Unlock()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	wal.BeforeBatchSync = func() {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+	}
+	t.Cleanup(func() {
+		wal.BeforeBatchSync = nil
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
 
-	if err := db.manifest.Close(); err != nil {
+	if err := db.Put([]byte("inflight"), []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	db.manifest = nil
 
-	db.notifyFlushForce()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		db.mu.RLock()
-		n := len(db.pendingFlush)
-		db.mu.RUnlock()
-		if n == 0 {
-			_ = db.Close()
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for WAL batch to reach fsync")
 	}
-	_ = db.Close()
-	t.Fatal("pendingFlush queue did not drain after retry cap")
+
+	syncDone := make(chan error, 1)
+	go func() {
+		syncDone <- db.Sync()
+	}()
+
+	select {
+	case err := <-syncDone:
+		t.Fatalf("Sync returned early: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-syncDone:
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Sync did not complete after releasing blocked fsync")
+	}
+
+	var replayed int
+	if err := wal.Replay(filepath.Join(dir, "wal.log"), func(wal.Record) error {
+		replayed++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if replayed != 1 {
+		t.Fatalf("replayed %d records after Sync, want 1", replayed)
+	}
+}
+
+func TestWALAppendErrorBlocksWrites(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(Options{Dir: dir, SyncWrites: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.mu.Lock()
+		db.closed = true
+		db.mu.Unlock()
+		if db.manifest != nil {
+			_ = db.manifest.Close()
+		}
+		if db.dirLock != nil {
+			releaseDirLock(db.dirLock)
+			db.dirLock = nil
+		}
+	})
+
+	if err := db.Put([]byte("before"), []byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	err = db.Put([]byte("after"), []byte("fail"))
+	if err == nil {
+		t.Fatal("Put after WAL close should fail")
+	}
+	if db.BackgroundError() == nil {
+		t.Fatalf("Put error = %v, want WAL background failure", err)
+	}
+
+	if val, getErr := db.Get([]byte("before")); getErr != nil || string(val) != "ok" {
+		t.Fatalf("Get(before) = %q, %v — reads must continue", val, getErr)
+	}
 }

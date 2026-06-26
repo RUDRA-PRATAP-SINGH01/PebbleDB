@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"log"
 	"sort"
 	"time"
 
@@ -10,9 +11,9 @@ import (
 )
 
 const (
-	batchMaxRecords = 64
-	batchMaxBytes   = 16 * 1024
-	batchFlushDelay = 1 * time.Millisecond
+	batchMaxRecords         = 64
+	batchMaxBytes           = 16 * 1024
+	batchFlushDelayDefault  = 1 * time.Millisecond
 )
 
 func recordWireSize(rec wal.Record) int {
@@ -61,8 +62,9 @@ func restorePendingBatchLocked(db *DB, batch []wal.Record) {
 }
 
 func (db *DB) scheduleBatchFlushLocked() {
+	delay := db.batchFlushDelay
 	if db.batchTimer == nil {
-		db.batchTimer = time.AfterFunc(batchFlushDelay, func() {
+		db.batchTimer = time.AfterFunc(delay, func() {
 			select {
 			case db.batchFlushCh <- struct{}{}:
 			default:
@@ -70,7 +72,7 @@ func (db *DB) scheduleBatchFlushLocked() {
 		})
 		return
 	}
-	db.batchTimer.Reset(batchFlushDelay)
+	db.batchTimer.Reset(delay)
 }
 
 func (db *DB) batchFlusher() {
@@ -79,12 +81,16 @@ func (db *DB) batchFlusher() {
 	for {
 		select {
 		case <-db.batchStop:
-			_ = db.flushPendingBatch()
+			if err := db.flushPendingBatch(); err != nil {
+				db.batchStopErr = err
+			}
 			return
 		case reply := <-db.batchSyncCh:
 			reply <- db.flushPendingBatch()
 		case <-db.batchFlushCh:
-			_ = db.flushPendingBatch()
+			if err := db.flushPendingBatch(); err != nil {
+				log.Printf("pebbledb: async batch flush: %v", err)
+			}
 		}
 	}
 }
@@ -106,6 +112,9 @@ func (db *DB) flushPendingBatch() error {
 	}
 	batch := takePendingBatchLocked(db)
 	db.mu.Unlock()
+
+	db.batchPersistWG.Add(1)
+	defer db.batchPersistWG.Done()
 
 	if err := db.wal.AppendBatch(batch); err != nil {
 		db.mu.Lock()
@@ -135,13 +144,14 @@ func (db *DB) flushPendingBatch() error {
 	return nil
 }
 
-func (db *DB) stopBatchFlusher() {
+func (db *DB) stopBatchFlusher() error {
 	if db.batchStop == nil {
-		return
+		return nil
 	}
 	close(db.batchStop)
 	<-db.batchDone
 	db.batchStop = nil
+	return db.batchStopErr
 }
 
 func lookupPendingBatch(batch []wal.Record, key []byte) ([]byte, memLookupResult) {

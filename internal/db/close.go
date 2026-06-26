@@ -38,7 +38,9 @@ func (db *DB) Close() error {
 
 	var closeErr error
 
-	db.stopBatchFlusher()
+	if err := db.stopBatchFlusher(); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
 	if err := db.flushPendingBatch(); err != nil {
 		closeErr = errors.Join(closeErr, err)
 	}

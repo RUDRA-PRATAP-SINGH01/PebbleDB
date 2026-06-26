@@ -13,8 +13,20 @@ import (
 )
 
 const flushRetryDelay = 100 * time.Millisecond
+const flushRetryDelayMax = 2 * time.Second
 
-var maxFlushRetries = 50
+func flushRetrySleep(retries int) {
+	delay := flushRetryDelay
+	if retries > 10 {
+		scaled := flushRetryDelay * time.Duration(retries/10)
+		if scaled > flushRetryDelayMax {
+			delay = flushRetryDelayMax
+		} else {
+			delay = scaled
+		}
+	}
+	time.Sleep(delay)
+}
 
 func (db *DB) flusher() {
 	for range db.flushCh {
@@ -37,32 +49,16 @@ func (db *DB) drainPendingFlush() {
 
 		if err := db.flushImmutable(entry.mem, entry.walCutoff); err != nil {
 			db.setBackgroundErr("flush", err)
-			log.Printf("pebbledb: flush error: %v (retry %d/%d)", err, entry.retries+1, maxFlushRetries)
-
-			db.mu.RLock()
-			closed := db.closed
-			db.mu.RUnlock()
+			log.Printf("pebbledb: flush error: %v (retry %d)", err, entry.retries+1)
 
 			entry.retries++
-			if closed || entry.retries >= maxFlushRetries {
-				db.mu.Lock()
-				if len(db.pendingFlush) > 0 {
-					db.pendingFlush = db.pendingFlush[1:]
-				}
-				db.mu.Unlock()
-				if entry.retries >= maxFlushRetries {
-					log.Printf("pebbledb: abandoning flush after %d retries: %v", maxFlushRetries, err)
-				}
-				continue
-			}
-
 			db.mu.Lock()
 			if len(db.pendingFlush) > 0 {
 				db.pendingFlush[0] = entry
 			}
 			db.mu.Unlock()
 
-			time.Sleep(flushRetryDelay)
+			flushRetrySleep(entry.retries)
 			continue
 		}
 
@@ -160,8 +156,10 @@ func (db *DB) flushImmutable(imm *memtable.SkipList, walCutoff int64) error {
 	}
 
 	if err := db.completeWalAfterFlush(walCutoff, id); err != nil {
+		db.setBackgroundErr("wal_cleanup", err)
 		log.Printf("pebbledb: wal cleanup after flush of sst %d: %v (data is durable; reopen will recover)", id, err)
 	} else {
+		db.clearBackgroundErrOp("wal_cleanup")
 		maybeCrash(CrashAfterWalTruncate)
 	}
 
