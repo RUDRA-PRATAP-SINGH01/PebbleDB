@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	batchMaxRecords         = 64
-	batchMaxBytes           = 16 * 1024
-	batchFlushDelayDefault  = 1 * time.Millisecond
+	batchMaxRecords        = 64
+	batchMaxBytes          = 16 * 1024
+	batchFlushDelayDefault = 1 * time.Millisecond
 )
 
 func recordWireSize(rec wal.Record) int {

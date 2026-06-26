@@ -56,10 +56,10 @@ type DB struct {
 	dirLock                 *os.File
 
 	// Group commit: batch WAL appends and fsync once per batch.
-	pendingBatch   []wal.Record
-	batchSizeBytes int
-	batchTimer     *time.Timer
-	batchFlushCh   chan struct{}
+	pendingBatch    []wal.Record
+	batchSizeBytes  int
+	batchTimer      *time.Timer
+	batchFlushCh    chan struct{}
 	batchSyncCh     chan chan error
 	batchStop       chan struct{}
 	batchDone       chan struct{}

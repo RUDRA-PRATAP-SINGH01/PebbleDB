@@ -104,7 +104,3 @@ func (m *MergeIterator) advance() error {
 	m.valid = true
 	return nil
 }
-
-func (m *MergeIterator) minKey() []byte {
-	return minKeyAcrossSources(m.sources)
-}
