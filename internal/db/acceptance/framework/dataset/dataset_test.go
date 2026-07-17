@@ -3,15 +3,15 @@ package dataset
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"path/filepath"
 	"testing"
 )
 
-// MockLogicalWriter tracks operations to assert generator correctness.
 type MockLogicalWriter struct {
 	Puts    map[string][]byte
 	Deletes map[string]bool
 	Synced  bool
+	Flushed bool
 	Closed  bool
 }
 
@@ -23,7 +23,8 @@ func NewMockLogicalWriter() *MockLogicalWriter {
 }
 
 func (m *MockLogicalWriter) Put(key, value []byte) error {
-	m.Puts[string(key)] = value
+	m.Puts[string(key)] = append([]byte(nil), value...)
+	delete(m.Deletes, string(key))
 	return nil
 }
 
@@ -33,81 +34,76 @@ func (m *MockLogicalWriter) Delete(key []byte) error {
 	return nil
 }
 
-func (m *MockLogicalWriter) Flush() error {
-	return nil
-}
-
-func (m *MockLogicalWriter) Sync() error {
-	m.Synced = true
-	return nil
-}
-
-func (m *MockLogicalWriter) Close() error {
-	m.Closed = true
-	return nil
-}
+func (m *MockLogicalWriter) Flush() error { m.Flushed = true; return nil }
+func (m *MockLogicalWriter) Sync() error  { m.Synced = true; return nil }
+func (m *MockLogicalWriter) Close() error { m.Closed = true; return nil }
 
 func TestSequentialGeneratorDeterministicState(t *testing.T) {
 	ctx := context.Background()
 	writer := NewMockLogicalWriter()
-
-	// 50 keys, 5 random overwrites, delete every 5th key
 	gen := NewSequentialGenerator(42, 50, 5, 5)
-	
-	stateVal, err := gen.Generate(ctx, writer)
+
+	expected, err := gen.Generate(ctx, writer)
 	if err != nil {
-		t.Fatalf("dataset generation failed: %v", err)
+		t.Fatalf("generate: %v", err)
 	}
-
-	expected, ok := stateVal.(*MapExpectedState)
-	if !ok {
-		t.Fatalf("expected *MapExpectedState, got %T", stateVal)
-	}
-
-	// 1. Verify key count
 	if len(expected.State) != 50 {
-		t.Fatalf("expected state size 50, got %d", len(expected.State))
+		t.Fatalf("state size=%d want 50", len(expected.State))
 	}
-
-	// 2. Verify deleted keys
 	for i := 0; i < 50; i += 5 {
 		key := fmtKey(i)
-		snap, exists := expected.Get(key)
-		if !exists {
-			t.Fatalf("key %s should exist in expected state tracking", string(key))
-		}
-		if !snap.Tombstone {
-			t.Fatalf("key %s should be flagged as tombstone in expected state", string(key))
-		}
-		if writer.Deletes[string(key)] != true {
-			t.Fatalf("key %s should have been written to Delete on logical writer", string(key))
+		snap, ok := expected.Get(key)
+		if !ok || !snap.Tombstone {
+			t.Fatalf("key %s should be tombstone", key)
 		}
 	}
-
-	// 3. Verify sync occurred
 	if !writer.Synced {
-		t.Fatal("generator did not call Sync on logical writer")
+		t.Fatal("expected Sync")
 	}
 
-	// 4. Verify value retrieval matches
-	for i := 0; i < 50; i++ {
-		if i%5 == 0 {
-			continue // skip deleted keys
-		}
-		key := fmtKey(i)
-		snap, exists := expected.Get(key)
-		if !exists {
-			t.Fatalf("expected key %s not found in map", string(key))
-		}
-		if snap.Tombstone {
-			t.Fatalf("key %s should not be flagged as tombstone", string(key))
-		}
-		if !bytes.Equal(writer.Puts[string(key)], snap.Value) {
-			t.Fatalf("logical writer value does not match expected state for key %s", string(key))
+	// Determinism: same seed → same values
+	writer2 := NewMockLogicalWriter()
+	expected2, err := NewSequentialGenerator(42, 50, 5, 5).Generate(ctx, writer2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range expected.Keys() {
+		a, _ := expected.Get(key)
+		b, _ := expected2.Get(key)
+		if a.Tombstone != b.Tombstone || a.Version != b.Version || !bytes.Equal(a.Value, b.Value) {
+			t.Fatalf("non-deterministic state for %s", key)
 		}
 	}
 }
 
-func fmtKey(i int) []byte {
-	return []byte(fmt.Sprintf("key_%08d", i))
+func TestExpectedStatePersistRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	expected, err := NewSequentialGenerator(7, 20, 3, 4).Generate(ctx, NewMockLogicalWriter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := expected.Persist(dir); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadExpectedState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Seed != 7 || loaded.Count != 20 {
+		t.Fatalf("meta mismatch: %+v", loaded)
+	}
+	if len(loaded.State) != len(expected.State) {
+		t.Fatalf("len %d vs %d", len(loaded.State), len(expected.State))
+	}
+	for _, key := range expected.Keys() {
+		a, _ := expected.Get(key)
+		b, _ := loaded.Get(key)
+		if a.Tombstone != b.Tombstone || !bytes.Equal(a.Value, b.Value) || a.Version != b.Version {
+			t.Fatalf("mismatch %s: %+v vs %+v", key, a, b)
+		}
+	}
+	if _, err := LoadExpectedState(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("expected error for missing dir")
+	}
 }

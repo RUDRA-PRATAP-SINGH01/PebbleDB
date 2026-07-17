@@ -1,47 +1,104 @@
-// Package dataset implements the data generators and logical state expectations
-// for PebbleDB acceptance test verification.
-//
-// Dependency Rules:
-// - Imports: interfaces, types.
+// Package dataset generates deterministic workloads and persists expected state for ATF.
 package dataset
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
+	"sort"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/interfaces"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/types"
 )
 
-// MapExpectedState implements a lookup map for validation of recovered logical state.
+const ExpectedStateFileName = "expected_state.json"
+
+// MapExpectedState is the ground-truth logical state after Generate.
 type MapExpectedState struct {
-	State map[string]types.ValueSnapshot
+	Seed  int64                          `json:"seed"`
+	Count int                            `json:"count"`
+	State map[string]types.ValueSnapshot `json:"state"`
 }
 
-// NewMapExpectedState allocates an empty MapExpectedState.
-func NewMapExpectedState() *MapExpectedState {
+// NewMapExpectedState allocates an empty map.
+func NewMapExpectedState(seed int64, count int) *MapExpectedState {
 	return &MapExpectedState{
+		Seed:  seed,
+		Count: count,
 		State: make(map[string]types.ValueSnapshot),
 	}
 }
 
-// Get queries expected status of a key.
+// Get returns the snapshot for key.
 func (m *MapExpectedState) Get(key []byte) (types.ValueSnapshot, bool) {
-	snap, exists := m.State[string(key)]
-	return snap, exists
+	snap, ok := m.State[string(key)]
+	return snap, ok
 }
 
-// Keys returns all keys tracked by the expected state.
+// Keys returns sorted keys for deterministic verification.
 func (m *MapExpectedState) Keys() [][]byte {
-	keys := make([][]byte, 0, len(m.State))
+	keys := make([]string, 0, len(m.State))
 	for k := range m.State {
-		keys = append(keys, []byte(k))
+		keys = append(keys, k)
 	}
-	return keys
+	sort.Strings(keys)
+	out := make([][]byte, len(keys))
+	for i, k := range keys {
+		out[i] = []byte(k)
+	}
+	return out
 }
 
-// SequentialGenerator generates deterministic sequential key sequences with optional overwrites and deletes.
+// Persist writes expected state atomically into dir/expected_state.json.
+func (m *MapExpectedState) Persist(dir string) error {
+	path := filepath.Join(dir, ExpectedStateFileName)
+	tmp := path + ".tmp"
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// LoadExpectedState reads expected_state.json from dir.
+func LoadExpectedState(dir string) (*MapExpectedState, error) {
+	path := filepath.Join(dir, ExpectedStateFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var m MapExpectedState
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	if m.State == nil {
+		m.State = make(map[string]types.ValueSnapshot)
+	}
+	return &m, nil
+}
+
+// SequentialGenerator writes a deterministic keyspace with overwrites and tombstones.
 type SequentialGenerator struct {
 	Seed           int64
 	Count          int
@@ -49,8 +106,8 @@ type SequentialGenerator struct {
 	TombstoneEvery int
 }
 
-// NewSequentialGenerator allocates a new SequentialGenerator.
-func NewSequentialGenerator(seed int64, count int, overwriteCount int, tombstoneEvery int) *SequentialGenerator {
+// NewSequentialGenerator constructs a generator.
+func NewSequentialGenerator(seed int64, count, overwriteCount, tombstoneEvery int) *SequentialGenerator {
 	return &SequentialGenerator{
 		Seed:           seed,
 		Count:          count,
@@ -59,93 +116,81 @@ func NewSequentialGenerator(seed int64, count int, overwriteCount int, tombstone
 	}
 }
 
-// Generate implements the interfaces.Dataset interface, writing to the database using LogicalWriter.
-func (g *SequentialGenerator) Generate(ctx context.Context, wr interface{}) (interface{}, error) {
-	writer, ok := wr.(interfaces.LogicalWriter)
-	if !ok {
-		return nil, fmt.Errorf("dataset generator requires interfaces.LogicalWriter, got %T", wr)
-	}
+// KeyCount returns unique key cardinality.
+func (g *SequentialGenerator) KeyCount() int { return g.Count }
 
+// Generate writes through LogicalWriter and returns expected state (not yet persisted).
+func (g *SequentialGenerator) Generate(ctx context.Context, writer interfaces.LogicalWriter) (*MapExpectedState, error) {
+	if g.Count <= 0 {
+		return nil, fmt.Errorf("dataset: count must be positive")
+	}
 	rng := rand.New(rand.NewSource(g.Seed))
-	expected := NewMapExpectedState()
+	expected := NewMapExpectedState(g.Seed, g.Count)
 
-	// 1. Initial write run
+	put := func(key, val []byte, version uint64) error {
+		if err := writer.Put(key, val); err != nil {
+			return err
+		}
+		expected.State[string(key)] = types.ValueSnapshot{
+			Value:     append([]byte(nil), val...),
+			Tombstone: false,
+			Version:   version,
+		}
+		return nil
+	}
+
 	for i := 0; i < g.Count; i++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-
-		key := []byte(fmt.Sprintf("key_%08d", i))
+		key := fmtKey(i)
 		val := []byte(fmt.Sprintf("value_%08d_%016x", i, rng.Uint64()))
-
-		if err := writer.Put(key, val); err != nil {
+		if err := put(key, val, 1); err != nil {
 			return nil, err
-		}
-
-		expected.State[string(key)] = types.ValueSnapshot{
-			Value:     val,
-			Tombstone: false,
-			Version:   1,
 		}
 	}
 
-	// 2. Overwrite runs
 	for i := 0; i < g.OverwriteCount; i++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		// select a random key index to overwrite
-		idx := rng.Intn(g.Count)
-		key := []byte(fmt.Sprintf("key_%08d", idx))
-		val := []byte(fmt.Sprintf("overwrite_%08d_%016x", idx, rng.Uint64()))
-
-		if err := writer.Put(key, val); err != nil {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-
-		expected.State[string(key)] = types.ValueSnapshot{
-			Value:     val,
-			Tombstone: false,
-			Version:   2,
+		idx := rng.Intn(g.Count)
+		key := fmtKey(idx)
+		prev := expected.State[string(key)]
+		nextVer := prev.Version + 1
+		if nextVer < 2 {
+			nextVer = 2
+		}
+		val := []byte(fmt.Sprintf("overwrite_%08d_%016x", idx, rng.Uint64()))
+		if err := put(key, val, nextVer); err != nil {
+			return nil, err
 		}
 	}
 
-	// 3. Tombstone write run (Delete)
 	if g.TombstoneEvery > 0 {
 		for i := 0; i < g.Count; i += g.TombstoneEvery {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
+			if err := ctx.Err(); err != nil {
+				return nil, err
 			}
-
-			key := []byte(fmt.Sprintf("key_%08d", i))
+			key := fmtKey(i)
 			if err := writer.Delete(key); err != nil {
 				return nil, err
 			}
-
+			prev := expected.State[string(key)]
 			expected.State[string(key)] = types.ValueSnapshot{
 				Value:     nil,
 				Tombstone: true,
-				Version:   3,
+				Version:   prev.Version + 1,
 			}
 		}
 	}
 
-	// Force WAL and Memtable Sync
 	if err := writer.Sync(); err != nil {
 		return nil, err
 	}
-
 	return expected, nil
 }
 
-// KeyCount returns total unique keys written.
-func (g *SequentialGenerator) KeyCount() int {
-	return g.Count
+func fmtKey(i int) []byte {
+	return []byte(fmt.Sprintf("key_%08d", i))
 }
