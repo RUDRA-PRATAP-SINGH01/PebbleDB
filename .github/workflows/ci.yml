@@ -97,3 +97,47 @@ jobs:
             grep '"Action":"fail"' test-output.json | head -25 >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  atf-crash:
+    name: atf-crash-recovery (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Cache Go modules and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ hashFiles('go.sum', 'go.mod') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ env.GO_VERSION }}-
+
+      # Dedicated gate for the Acceptance Test Driven Development (ATDD) crash
+      # matrix: every built-in engine crash point (flush_* and compact_*) is driven
+      # write → crash → reopen → multi-module + structural verification. Isolated so
+      # a recovery regression is attributed clearly rather than buried in the full run.
+      - name: ATF crash-recovery matrix
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v \
+            -run 'TestATFCrashRecoveryMatrix' \
+            ./internal/db/acceptance/framework/ 2>&1 | tee atf-crash.log
+
+      - name: ATF framework unit suite
+        run: |
+          set -o pipefail
+          go test -race -count=1 ./internal/db/acceptance/... 2>&1 | tee atf-suite.log

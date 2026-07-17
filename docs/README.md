@@ -69,7 +69,9 @@ Library import path: `github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db`
 ## Testing
 
 - [TESTING_STRATEGY.md](testing/TESTING_STRATEGY.md)
+- [ATF.md](testing/ATF.md) — acceptance crash-recovery framework
 - [CRASH_TESTING.md](testing/CRASH_TESTING.md)
+- [TestRecoveryAfterFlushCrash_ATDD_Spec.md](TestRecoveryAfterFlushCrash_ATDD_Spec.md)
 - [RACE_DETECTION.md](testing/RACE_DETECTION.md)
 - [FAILURE_INJECTION.md](testing/FAILURE_INJECTION.md)
 
