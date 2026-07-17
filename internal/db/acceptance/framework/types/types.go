@@ -235,3 +235,10 @@ type ResourceAllocation struct {
 	GrantedAt time.Time       `json:"granted_at"`
 	Released  bool            `json:"released"`
 }
+
+// ValueSnapshot represents the expected state of a key-value record.
+type ValueSnapshot struct {
+	Value     []byte `json:"value,omitempty"`
+	Tombstone bool   `json:"tombstone"`
+	Version   uint64 `json:"version"`
+}
