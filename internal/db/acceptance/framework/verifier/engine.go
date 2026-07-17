@@ -37,6 +37,11 @@ type Request struct {
 	ExecutionID string
 	DatabaseDir string
 	Config      types.Configuration
+	// VerificationDAG is the scenario's module dependency graph (module → deps).
+	// When non-empty it controls module execution order and lets the engine skip
+	// modules whose dependencies failed. Unknown module names are ignored so the
+	// DAG stays advisory and backward compatible.
+	VerificationDAG map[string][]string
 }
 
 // VerificationEngine orchestrates oracle load, DB open, verifier modules, and reporting.
@@ -175,11 +180,24 @@ func (e *VerificationEngine) Verify(req Request) (*VerificationReport, error) {
 		report:       report,
 	}
 
+	order, err := resolveModuleOrder(e.registry, req.VerificationDAG)
+	if err != nil {
+		_ = database.Close()
+		report.Passed = false
+		report.Aborted = true
+		report.AbortReason = err.Error()
+		report.Duration = time.Since(start)
+		e.publish(ctx, types.EventVerificationAborted, report)
+		e.metric(req.ScenarioID, "verification_failures", 1)
+		return report, errors.NewValidationError("verifier dag resolution failed", err)
+	}
+
 	var totalKeys int64
 	var totalScans int64
 	var totalFailures float64
+	unhealthy := make(map[string]bool)
 
-	for _, mod := range e.registry.All() {
+	for _, mod := range order.modules {
 		if err := ctx.Err(); err != nil {
 			_ = database.Close()
 			report.Passed = false
@@ -188,6 +206,25 @@ func (e *VerificationEngine) Verify(req Request) (*VerificationReport, error) {
 			report.Duration = time.Since(start)
 			e.publish(ctx, types.EventVerificationAborted, report)
 			return report, err
+		}
+
+		// Skip a module whose dependency already failed/skipped: its result would
+		// be meaningless and the report is already marked failed by the dependency.
+		if blockedBy := firstUnhealthyDep(order.deps[mod.Name()], unhealthy); blockedBy != "" {
+			unhealthy[mod.Name()] = true
+			skipped := emptyModuleResult(mod.Name())
+			skipped.Warnings = 1
+			skipped.Failures = append(skipped.Failures, Failure{
+				Verifier:       mod.Name(),
+				ExpectedValue:  "dependency satisfied",
+				RecoveredValue: fmt.Sprintf("dependency %q unhealthy", blockedBy),
+				Reason:         "dependency_skipped",
+				Severity:       SeverityWarning,
+				RecoveryPhase:  PhaseVerify,
+				Explanation:    fmt.Sprintf("Module %q skipped because dependency %q failed", mod.Name(), blockedBy),
+			})
+			report.addModule(*skipped)
+			continue
 		}
 
 		e.publish(ctx, types.EventVerifierStarted, map[string]string{
@@ -228,6 +265,7 @@ func (e *VerificationEngine) Verify(req Request) (*VerificationReport, error) {
 		if result.Passed {
 			e.publish(ctx, types.EventVerifierPassed, result)
 		} else {
+			unhealthy[mod.Name()] = true
 			totalFailures += float64(len(result.Failures))
 			e.publish(ctx, types.EventVerifierFailed, result)
 		}
