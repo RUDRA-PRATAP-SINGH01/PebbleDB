@@ -3,6 +3,8 @@ package dataset
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -14,21 +16,30 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/types"
 )
 
-const ExpectedStateFileName = "expected_state.json"
+const (
+	ExpectedStateFileName = "expected_state.json"
+	// OracleSchemaVersion is the persisted oracle document version.
+	OracleSchemaVersion = 1
+)
 
 // MapExpectedState is the ground-truth logical state after Generate.
 type MapExpectedState struct {
-	Seed  int64                          `json:"seed"`
-	Count int                            `json:"count"`
-	State map[string]types.ValueSnapshot `json:"state"`
+	SchemaVersion int                            `json:"schema_version"`
+	ScenarioID    string                         `json:"scenario_id,omitempty"`
+	ExecutionID   string                         `json:"execution_id,omitempty"`
+	Seed          int64                          `json:"seed"`
+	Count         int                            `json:"count"`
+	State         map[string]types.ValueSnapshot `json:"state"`
+	Checksum      string                         `json:"checksum,omitempty"`
 }
 
 // NewMapExpectedState allocates an empty map.
 func NewMapExpectedState(seed int64, count int) *MapExpectedState {
 	return &MapExpectedState{
-		Seed:  seed,
-		Count: count,
-		State: make(map[string]types.ValueSnapshot),
+		SchemaVersion: OracleSchemaVersion,
+		Seed:          seed,
+		Count:         count,
+		State:         make(map[string]types.ValueSnapshot),
 	}
 }
 
@@ -52,8 +63,42 @@ func (m *MapExpectedState) Keys() [][]byte {
 	return out
 }
 
+// ComputeChecksum returns SHA-256 hex of the canonical oracle payload (excludes Checksum).
+func (m *MapExpectedState) ComputeChecksum() (string, error) {
+	payload := struct {
+		SchemaVersion int                            `json:"schema_version"`
+		ScenarioID    string                         `json:"scenario_id,omitempty"`
+		ExecutionID   string                         `json:"execution_id,omitempty"`
+		Seed          int64                          `json:"seed"`
+		Count         int                            `json:"count"`
+		State         map[string]types.ValueSnapshot `json:"state"`
+	}{
+		SchemaVersion: m.SchemaVersion,
+		ScenarioID:    m.ScenarioID,
+		ExecutionID:   m.ExecutionID,
+		Seed:          m.Seed,
+		Count:         m.Count,
+		State:         m.State,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // Persist writes expected state atomically into dir/expected_state.json.
 func (m *MapExpectedState) Persist(dir string) error {
+	if m.SchemaVersion == 0 {
+		m.SchemaVersion = OracleSchemaVersion
+	}
+	sum, err := m.ComputeChecksum()
+	if err != nil {
+		return err
+	}
+	m.Checksum = sum
+
 	path := filepath.Join(dir, ExpectedStateFileName)
 	tmp := path + ".tmp"
 	data, err := json.MarshalIndent(m, "", "  ")
@@ -81,7 +126,8 @@ func (m *MapExpectedState) Persist(dir string) error {
 	return os.Rename(tmp, path)
 }
 
-// LoadExpectedState reads expected_state.json from dir.
+// LoadExpectedState reads expected_state.json from dir without checksum enforcement.
+// Prefer verifier.OracleLoader for production acceptance paths.
 func LoadExpectedState(dir string) (*MapExpectedState, error) {
 	path := filepath.Join(dir, ExpectedStateFileName)
 	data, err := os.ReadFile(path)
@@ -95,7 +141,37 @@ func LoadExpectedState(dir string) (*MapExpectedState, error) {
 	if m.State == nil {
 		m.State = make(map[string]types.ValueSnapshot)
 	}
+	if m.SchemaVersion == 0 {
+		m.SchemaVersion = OracleSchemaVersion
+	}
 	return &m, nil
+}
+
+// LiveKeys returns sorted keys that are not tombstones.
+func (m *MapExpectedState) LiveKeys() [][]byte {
+	keys := make([]string, 0, len(m.State))
+	for k, snap := range m.State {
+		if !snap.Tombstone {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	out := make([][]byte, len(keys))
+	for i, k := range keys {
+		out[i] = []byte(k)
+	}
+	return out
+}
+
+// LiveCount returns the number of non-tombstone keys.
+func (m *MapExpectedState) LiveCount() int {
+	n := 0
+	for _, snap := range m.State {
+		if !snap.Tombstone {
+			n++
+		}
+	}
+	return n
 }
 
 // SequentialGenerator writes a deterministic keyspace with overwrites and tombstones.
