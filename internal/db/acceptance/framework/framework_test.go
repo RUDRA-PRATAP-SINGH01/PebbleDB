@@ -30,15 +30,35 @@ func TestATFChildNop(t *testing.T) {
 	t.Helper()
 }
 
-func TestATFCrashRecoveryFlushAfterManifest(t *testing.T) {
-	runATFCrashScenario(t, "EXS-010", "flush_after_manifest")
+// crashMatrix enumerates every built-in engine crash point wired end-to-end
+// through the ATF: deterministic write → crash → reopen → multi-module verify.
+// Flush points are reached by ForceMemtableFlush; compaction points are reached
+// by producing two SSTables and then ForceCompaction inside the child.
+var crashMatrix = []struct {
+	id         string
+	crashPoint string
+	compaction bool
+}{
+	{"EXS-012", "flush_after_sst_close", false},
+	{"EXS-010", "flush_after_manifest", false},
+	{"EXS-011", "flush_after_wal_state", false},
+	{"EXS-013", "flush_after_wal_truncate", false},
+	{"EXS-014", "compact_after_merge_close", true},
+	{"EXS-015", "compact_after_manifest", true},
+	{"EXS-016", "compact_after_sstables_update", true},
+	{"EXS-017", "compact_after_delete_old", true},
 }
 
-func TestATFCrashRecoveryFlushAfterWalState(t *testing.T) {
-	runATFCrashScenario(t, "EXS-011", "flush_after_wal_state")
+func TestATFCrashRecoveryMatrix(t *testing.T) {
+	for _, tc := range crashMatrix {
+		tc := tc
+		t.Run(tc.crashPoint, func(t *testing.T) {
+			runATFCrashScenario(t, tc.id, tc.crashPoint, tc.compaction)
+		})
+	}
 }
 
-func runATFCrashScenario(t *testing.T, id, crashPoint string) {
+func runATFCrashScenario(t *testing.T, id, crashPoint string, compaction bool) {
 	t.Helper()
 	base := t.TempDir()
 	logFile := filepath.Join(base, "atf.log")
@@ -58,24 +78,44 @@ func runATFCrashScenario(t *testing.T, id, crashPoint string) {
 		t.Fatalf("config: %v", err)
 	}
 
+	options := map[string]string{
+		"memtable_size_bytes": "1048576",
+		"key_count":           "40",
+		"overwrite_count":     "4",
+		"tombstone_every":     "5",
+		"seed":                "99",
+	}
+	capabilities := []string{"requires_wal", "requires_flush"}
+	prefix := "FlushCrash_"
+	if compaction {
+		// A low threshold plus two SSTables (dataset + idempotent replay) lets the
+		// child reach the compaction crash points deterministically.
+		options["compaction_threshold"] = "2"
+		capabilities = append(capabilities, "requires_compaction")
+		prefix = "CompactCrash_"
+	}
+
 	reg := registry.NewMapRegistry()
 	scenario := types.ScenarioDefinition{
 		IDStr:           id,
-		NameStr:         "FlushCrash_" + crashPoint,
+		NameStr:         prefix + crashPoint,
 		VersionStr:      "1.0.0",
 		PriorityVal:     types.P1,
 		RequirementsVal: []string{"DB-REC-005"},
 		ContractsVal:    []string{"C-DUR-01"},
-		CapabilitiesVal: []string{"requires_wal", "requires_flush"},
-		OptionsMap: map[string]string{
-			"memtable_size_bytes": "1048576",
-			"key_count":           "40",
-			"overwrite_count":     "4",
-			"tombstone_every":     "5",
-			"seed":                "99",
+		CapabilitiesVal: capabilities,
+		OptionsMap:      options,
+		CrashPointStr:   crashPoint,
+		VerifyDAGMap: map[string][]string{
+			"metadata_verifier":   nil,
+			"get_verifier":        {"metadata_verifier"},
+			"iterator_verifier":   {"get_verifier"},
+			"range_scan_verifier": {"get_verifier"},
+			"snapshot_verifier":   {"get_verifier"},
+			"directory_audit":     {"metadata_verifier"},
+			"manifest_audit":      {"directory_audit"},
+			"checkpoint_audit":    {"manifest_audit"},
 		},
-		CrashPointStr: crashPoint,
-		VerifyDAGMap:  map[string][]string{"get_verifier": nil, "scan_verifier": {"get_verifier"}},
 	}
 	if err := reg.Register(scenario); err != nil {
 		t.Fatal(err)
