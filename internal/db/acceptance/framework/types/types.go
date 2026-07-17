@@ -31,6 +31,7 @@ const (
 	StateExecutionPrepared
 	StateSubprocessWriting
 	StateSubprocessCrashed
+	StateSubprocessExited
 	StateDirectorySnapshoted
 	StateRecoveryAttempted
 	StateVerificationRunning
@@ -55,8 +56,10 @@ func (s State) String() string {
 		return "SUBPROCESS_WRITING"
 	case StateSubprocessCrashed:
 		return "SUBPROCESS_CRASHED"
+	case StateSubprocessExited:
+		return "SUBPROCESS_EXITED"
 	case StateDirectorySnapshoted:
-		return "DIRECTORY_SNAPSHOTED"
+		return "DIRECTORY_SNAPSHOTTED"
 	case StateRecoveryAttempted:
 		return "RECOVERY_ATTEMPTED"
 	case StateVerificationRunning:
@@ -78,36 +81,36 @@ func (s State) String() string {
 type Status string
 
 const (
-	StatusPass        Status = "PASS"
-	StatusFail        Status = "FAIL"
-	StatusBlocked     Status = "BLOCKED"
+	StatusPass         Status = "PASS"
+	StatusFail         Status = "FAIL"
+	StatusBlocked      Status = "BLOCKED"
 	StatusInconclusive Status = "INCONCLUSIVE"
 )
 
 // ScenarioDefinition defines a declarative test specification.
 type ScenarioDefinition struct {
-	IDStr           string                 `yaml:"id"`
-	NameStr         string                 `yaml:"name"`
-	VersionStr      string                 `yaml:"spec_version"`
-	PriorityVal     Priority               `yaml:"priority"`
-	RequirementsVal []string               `yaml:"requirements"`
-	ContractsVal    []string               `yaml:"contracts"`
-	CapabilitiesVal []string               `yaml:"capabilities"`
-	OptionsMap      map[string]interface{} `yaml:"options"`
-	CrashPointStr   string                 `yaml:"crash_point"`
-	VerifyDAGMap    map[string][]string    `yaml:"verification_dag"`
+	IDStr           string              `yaml:"id"`
+	NameStr         string              `yaml:"name"`
+	VersionStr      string              `yaml:"spec_version"`
+	PriorityVal     Priority            `yaml:"priority"`
+	RequirementsVal []string            `yaml:"requirements"`
+	ContractsVal    []string            `yaml:"contracts"`
+	CapabilitiesVal []string            `yaml:"capabilities"`
+	OptionsMap      map[string]string   `yaml:"options"`
+	CrashPointStr   string              `yaml:"crash_point"`
+	VerifyDAGMap    map[string][]string `yaml:"verification_dag"`
 }
 
 // Implement the Scenario interface
-func (s ScenarioDefinition) ID() string                        { return s.IDStr }
-func (s ScenarioDefinition) Name() string                      { return s.NameStr }
-func (s ScenarioDefinition) Version() string                   { return s.VersionStr }
-func (s ScenarioDefinition) Priority() int                     { return int(s.PriorityVal) }
-func (s ScenarioDefinition) Requirements() []string            { return s.RequirementsVal }
-func (s ScenarioDefinition) Contracts() []string               { return s.ContractsVal }
-func (s ScenarioDefinition) Capabilities() []string            { return s.CapabilitiesVal }
-func (s ScenarioDefinition) Options() map[string]interface{}   { return s.OptionsMap }
-func (s ScenarioDefinition) CrashPoint() string                { return s.CrashPointStr }
+func (s ScenarioDefinition) ID() string                           { return s.IDStr }
+func (s ScenarioDefinition) Name() string                         { return s.NameStr }
+func (s ScenarioDefinition) Version() string                      { return s.VersionStr }
+func (s ScenarioDefinition) Priority() int                        { return int(s.PriorityVal) }
+func (s ScenarioDefinition) Requirements() []string               { return s.RequirementsVal }
+func (s ScenarioDefinition) Contracts() []string                  { return s.ContractsVal }
+func (s ScenarioDefinition) Capabilities() []string               { return s.CapabilitiesVal }
+func (s ScenarioDefinition) Options() map[string]string           { return s.OptionsMap }
+func (s ScenarioDefinition) CrashPoint() string                   { return s.CrashPointStr }
 func (s ScenarioDefinition) VerificationDAG() map[string][]string { return s.VerifyDAGMap }
 
 // Metadata contains system info and binary fingerprints.
@@ -120,50 +123,48 @@ type Metadata struct {
 
 // CampaignSession tracks the execution of a set of scenarios.
 type CampaignSession struct {
-	SessionID   string             `json:"session_id"`
-	MetadataVal Metadata           `json:"metadata"`
-	StateVal    State              `json:"state"`
-	StartTime   time.Time          `json:"start_time"`
-	EndTime     time.Time          `json:"end_time"`
-	Scenarios   []ScenarioResult   `json:"scenarios"`
+	SessionID   string           `json:"session_id"`
+	MetadataVal Metadata         `json:"metadata"`
+	StateVal    State            `json:"state"`
+	StartTime   time.Time        `json:"start_time"`
+	EndTime     time.Time        `json:"end_time"`
+	Scenarios   []ScenarioResult `json:"scenarios"`
 }
 
 // ScenarioResult records the outcome of a scenario execution campaign run.
 type ScenarioResult struct {
-	ScenarioID string          `json:"scenario_id"`
-	StatusVal  Status          `json:"status"`
-	Retries    int             `json:"retries"`
+	ScenarioID string            `json:"scenario_id"`
+	StatusVal  Status            `json:"status"`
+	Retries    int               `json:"retries"`
 	Executions []ExecutionResult `json:"executions"`
 }
 
 // ExecutionSession represents a single isolated run of a scenario.
 type ExecutionSession struct {
-	SessionID   string    `json:"session_id"`
-	ScenarioID  string    `json:"scenario_id"`
-	StateVal    State     `json:"state"`
-	RunIndex    int       `json:"run_index"`
-	TempDir     string    `json:"temp_dir"`
-	StartTime   time.Time `json:"start_time"`
-	EndTime     time.Time `json:"end_time"`
+	SessionID  string    `json:"session_id"`
+	ScenarioID string    `json:"scenario_id"`
+	StateVal   State     `json:"state"`
+	RunIndex   int       `json:"run_index"`
+	TempDir    string    `json:"temp_dir"`
+	StartTime  time.Time `json:"start_time"`
+	EndTime    time.Time `json:"end_time"`
 }
 
 // ExecutionResult records the raw subprocess execution results.
 type ExecutionResult struct {
-	RunIndex      int       `json:"run_index"`
-	ExitCode      int       `json:"exit_code"`
-	Duration      float64   `json:"duration_ms"`
-	StderrSummary string    `json:"stderr_summary"`
-	StateAtExit   State     `json:"state_at_exit"`
+	RunIndex      int     `json:"run_index"`
+	ExitCode      int     `json:"exit_code"`
+	Duration      float64 `json:"duration_ms"`
+	StderrSummary string  `json:"stderr_summary"`
+	StateAtExit   State   `json:"state_at_exit"`
 }
 
 // VerificationResult contains assertions and metrics generated post-recovery.
 type VerificationResult struct {
-	Passed     bool              `json:"passed"`
-	Failures   []VerifierFailure `json:"failures"`
-	Timings    map[string]double `json:"verifier_timings_ms"`
+	Passed   bool               `json:"passed"`
+	Failures []VerifierFailure  `json:"failures"`
+	Timings  map[string]float64 `json:"verifier_timings_ms"`
 }
-
-type double = float64
 
 // VerifierFailure documents an invariant mismatch.
 type VerifierFailure struct {

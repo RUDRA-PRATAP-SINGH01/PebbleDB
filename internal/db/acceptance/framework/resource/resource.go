@@ -1,8 +1,4 @@
-// Package resource implements the system resource manager, controlling concurrent allocations
-// of CPU cores, memory limits, file descriptor budgets, and isolated database directories.
-//
-// Dependency Rules:
-// - Imports: interfaces, types, errors, logging.
+// Package resource manages CPU/memory/FD budgets and isolated temp directories for ATF runs.
 package resource
 
 import (
@@ -12,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/errors"
@@ -20,7 +18,15 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/types"
 )
 
-// ResourceManager manages resource allocations and isolated path allocations.
+// Reservation is an opaque, pointer-stable grant from Reserve.
+type Reservation struct {
+	ID        uint64
+	Request   types.ResourceRequest
+	GrantedAt time.Time
+	released  atomic.Bool
+}
+
+// ResourceManager tracks resource budgets and sandbox directories.
 type ResourceManager struct {
 	mu                sync.Mutex
 	cond              *sync.Cond
@@ -32,9 +38,11 @@ type ResourceManager struct {
 	allocatedCPUs     int
 	allocatedMemoryMB int64
 	allocatedFDs      int
+	nextID            uint64
+	retainArtifacts   bool
 }
 
-// NewResourceManager initializes a new ResourceManager with resource limit boundaries.
+// NewResourceManager initializes a ResourceManager.
 func NewResourceManager(
 	logger *logging.Logger,
 	baseDir string,
@@ -43,111 +51,100 @@ func NewResourceManager(
 	maxFDs int,
 ) *ResourceManager {
 	rm := &ResourceManager{
-		logger:      logger,
-		baseDir:     baseDir,
-		maxCPUs:     maxCPUs,
-		maxMemoryMB: maxMemoryMB,
-		maxFDs:      maxFDs,
+		logger:          logger,
+		baseDir:         baseDir,
+		maxCPUs:         maxCPUs,
+		maxMemoryMB:     maxMemoryMB,
+		maxFDs:          maxFDs,
+		retainArtifacts: true,
 	}
 	rm.cond = sync.NewCond(&rm.mu)
 	return rm
 }
 
-// Reserve allocates system resources matching the request. Blocks until slots are available.
-func (rm *ResourceManager) Reserve(ctx context.Context, req interface{}) (interface{}, error) {
-	request, ok := req.(types.ResourceRequest)
-	if !ok {
-		return nil, errors.NewResourceError("invalid resource request type", nil)
+// SetRetainArtifacts controls whether failed-run directories are kept.
+func (rm *ResourceManager) SetRetainArtifacts(retain bool) {
+	rm.mu.Lock()
+	rm.retainArtifacts = retain
+	rm.mu.Unlock()
+}
+
+// Reserve blocks until the request fits the budget or ctx is canceled.
+func (rm *ResourceManager) Reserve(ctx context.Context, req types.ResourceRequest) (*Reservation, error) {
+	if req.CPUs < 0 || req.MemoryMB < 0 || req.FileDescriptor < 0 {
+		return nil, errors.NewResourceError("resource request fields must be non-negative", nil)
 	}
 
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	// Wait loop with context checking
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
+	for !rm.canAllocateLocked(req) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-
-		if rm.canAllocateLocked(request) {
-			rm.allocatedCPUs += request.CPUs
-			rm.allocatedMemoryMB += request.MemoryMB
-			rm.allocatedFDs += request.FileDescriptor
-
-			rm.logger.Debug("Allocated resources: CPUs=%d (total %d/%d), Memory=%dMB (total %d/%dMB)",
-				request.CPUs, rm.allocatedCPUs, rm.maxCPUs,
-				request.MemoryMB, rm.allocatedMemoryMB, rm.maxMemoryMB)
-
-			return types.ResourceAllocation{
-				Request:   request,
-				GrantedAt: time.Now(),
-				Released:  false,
-			}, nil
-		}
-
-		// Wait for resource release signal
-		releasedSignal := make(chan struct{})
-		go func() {
+		// Wake waiters when ctx cancels so we do not deadlock.
+		stop := context.AfterFunc(ctx, func() {
 			rm.mu.Lock()
-			defer rm.mu.Unlock()
-			rm.cond.Wait()
-			close(releasedSignal)
-		}()
-
-		rm.mu.Unlock()
-		select {
-		case <-releasedSignal:
-			rm.mu.Lock() // Re-acquire lock for next check loop
-		case <-ctx.Done():
-			rm.mu.Lock() // Re-acquire lock to satisfy defer
-			return nil, ctx.Err()
+			rm.cond.Broadcast()
+			rm.mu.Unlock()
+		})
+		rm.cond.Wait()
+		stop()
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 	}
+
+	rm.allocatedCPUs += req.CPUs
+	rm.allocatedMemoryMB += req.MemoryMB
+	rm.allocatedFDs += req.FileDescriptor
+	rm.nextID++
+	id := rm.nextID
+
+	rm.logger.Debug("Allocated resources id=%d CPUs=%d/%d Memory=%d/%dMB FDs=%d/%d",
+		id, rm.allocatedCPUs, rm.maxCPUs, rm.allocatedMemoryMB, rm.maxMemoryMB, rm.allocatedFDs, rm.maxFDs)
+
+	return &Reservation{
+		ID:        id,
+		Request:   req,
+		GrantedAt: time.Now(),
+	}, nil
 }
 
 func (rm *ResourceManager) canAllocateLocked(req types.ResourceRequest) bool {
-	if rm.allocatedCPUs+req.CPUs > rm.maxCPUs {
-		return false
-	}
-	if rm.allocatedMemoryMB+req.MemoryMB > rm.maxMemoryMB {
-		return false
-	}
-	if rm.allocatedFDs+req.FileDescriptor > rm.maxFDs {
-		return false
-	}
-	return true
+	return rm.allocatedCPUs+req.CPUs <= rm.maxCPUs &&
+		rm.allocatedMemoryMB+req.MemoryMB <= rm.maxMemoryMB &&
+		rm.allocatedFDs+req.FileDescriptor <= rm.maxFDs
 }
 
-// Release returns resource slots back to the system pool.
-func (rm *ResourceManager) Release(alloc interface{}) error {
-	allocation, ok := alloc.(types.ResourceAllocation)
-	if !ok {
-		return errors.NewResourceError("invalid resource allocation type", nil)
+// Release returns a reservation to the pool. Idempotent.
+func (rm *ResourceManager) Release(res *Reservation) error {
+	if res == nil {
+		return errors.NewResourceError("nil reservation", nil)
+	}
+	if !res.released.CompareAndSwap(false, true) {
+		return nil
 	}
 
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	if allocation.Released {
-		return nil
+	rm.allocatedCPUs -= res.Request.CPUs
+	rm.allocatedMemoryMB -= res.Request.MemoryMB
+	rm.allocatedFDs -= res.Request.FileDescriptor
+	if rm.allocatedCPUs < 0 || rm.allocatedMemoryMB < 0 || rm.allocatedFDs < 0 {
+		return errors.NewResourceError("resource accounting underflow", nil)
 	}
 
-	rm.allocatedCPUs -= allocation.Request.CPUs
-	rm.allocatedMemoryMB -= allocation.Request.MemoryMB
-	rm.allocatedFDs -= allocation.Request.FileDescriptor
-
-	rm.logger.Debug("Released resources: CPUs=%d (remaining %d/%d), Memory=%dMB (remaining %d/%dMB)",
-		allocation.Request.CPUs, rm.allocatedCPUs, rm.maxCPUs,
-		allocation.Request.MemoryMB, rm.allocatedMemoryMB, rm.maxMemoryMB)
-
-	rm.cond.Broadcast() // Signal waiting scenarios
+	rm.logger.Debug("Released resources id=%d remaining CPUs=%d/%d Memory=%d/%dMB",
+		res.ID, rm.allocatedCPUs, rm.maxCPUs, rm.allocatedMemoryMB, rm.maxMemoryMB)
+	rm.cond.Broadcast()
 	return nil
 }
 
-// AllocateTempDir creates a uniquely hashed subdirectory namespace for isolated database runs.
+// AllocateTempDir creates an isolated subdirectory under baseDir.
 func (rm *ResourceManager) AllocateTempDir(prefix string) (string, error) {
+	prefix = sanitizePrefix(prefix)
 	if err := os.MkdirAll(rm.baseDir, 0755); err != nil {
 		return "", errors.NewLockError("failed to create base directory", err)
 	}
@@ -159,17 +156,48 @@ func (rm *ResourceManager) AllocateTempDir(prefix string) (string, error) {
 
 	dirName := fmt.Sprintf("%s_%s_%s", prefix, time.Now().Format("20060102_150405"), hex.EncodeToString(randBytes))
 	dirPath := filepath.Join(rm.baseDir, dirName)
-
-	if err := os.MkdirAll(dirPath, 0755); err != nil {
-		return "", errors.NewResourceError("failed to create target temp directory", err)
+	clean := filepath.Clean(dirPath)
+	if !strings.HasPrefix(clean, filepath.Clean(rm.baseDir)+string(os.PathSeparator)) && clean != filepath.Clean(rm.baseDir) {
+		return "", errors.NewResourceError("refusing path outside base dir", nil)
 	}
 
-	rm.logger.Debug("Allocated isolated directory: %s", dirPath)
-	return dirPath, nil
+	if err := os.MkdirAll(clean, 0755); err != nil {
+		return "", errors.NewResourceError("failed to create target temp directory", err)
+	}
+	rm.logger.Debug("Allocated isolated directory: %s", clean)
+	return clean, nil
 }
 
-// CleanTempDir wipes the target database directory.
+func sanitizePrefix(prefix string) string {
+	prefix = filepath.Base(prefix)
+	prefix = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, prefix)
+	if prefix == "" || prefix == "." || prefix == ".." {
+		return "run"
+	}
+	return prefix
+}
+
+// CleanTempDir removes path. For retainArtifacts, use RetainOrClean instead.
 func (rm *ResourceManager) CleanTempDir(path string) error {
 	rm.logger.Debug("Sweeping directory: %s", path)
 	return os.RemoveAll(path)
+}
+
+// RetainOrClean keeps path on failure when retainArtifacts is set; otherwise deletes it.
+func (rm *ResourceManager) RetainOrClean(path string, passed bool) error {
+	rm.mu.Lock()
+	retain := rm.retainArtifacts
+	rm.mu.Unlock()
+	if !passed && retain {
+		rm.logger.Warn("Retaining artifact directory after failure: %s", path)
+		return nil
+	}
+	return rm.CleanTempDir(path)
 }

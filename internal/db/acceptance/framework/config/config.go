@@ -7,6 +7,7 @@ package config
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -107,29 +108,41 @@ func (c *ConfigLoader) loadFromFile(path string, conf *types.Configuration) erro
 		case "base_dir":
 			conf.BaseDir = val
 		case "memtable_size_bytes":
-			if v, err := strconv.ParseInt(val, 10, 64); err == nil {
-				conf.MemtableSizeBytes = v
+			v, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				return fmt.Errorf("memtable_size_bytes: %w", err)
 			}
+			conf.MemtableSizeBytes = v
 		case "compaction_threshold":
-			if v, err := strconv.Atoi(val); err == nil {
-				conf.CompactionThreshold = v
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("compaction_threshold: %w", err)
 			}
+			conf.CompactionThreshold = v
 		case "sync_writes":
-			if v, err := strconv.ParseBool(val); err == nil {
-				conf.SyncWrites = v
+			v, err := strconv.ParseBool(val)
+			if err != nil {
+				return fmt.Errorf("sync_writes: %w", err)
 			}
+			conf.SyncWrites = v
 		case "parallelism":
-			if v, err := strconv.Atoi(val); err == nil {
-				conf.Parallelism = v
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("parallelism: %w", err)
 			}
+			conf.Parallelism = v
 		case "max_retries":
-			if v, err := strconv.Atoi(val); err == nil {
-				conf.MaxRetries = v
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("max_retries: %w", err)
 			}
+			conf.MaxRetries = v
 		case "timeout_seconds":
-			if v, err := strconv.Atoi(val); err == nil {
-				conf.Timeout = time.Duration(v) * time.Second
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("timeout_seconds: %w", err)
 			}
+			conf.Timeout = time.Duration(v) * time.Second
 		}
 	}
 	return scanner.Err()

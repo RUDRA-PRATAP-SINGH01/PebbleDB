@@ -86,10 +86,11 @@ func (s *CampaignScheduler) Start(ctx context.Context) error {
 
 	s.logger.Info("CampaignScheduler starting campaign execution loop")
 
-	// 1. Resolve Scenario Dependency DAG
 	sorted, err := s.resolveDependencies()
 	if err != nil {
+		s.mu.Lock()
 		s.running = false
+		s.mu.Unlock()
 		return err
 	}
 
@@ -97,7 +98,6 @@ func (s *CampaignScheduler) Start(ctx context.Context) error {
 	s.pendingQueue = sorted
 	s.mu.Unlock()
 
-	// 2. Launch execution pool slots (execution logic omitted for Milestone 1)
 	s.logger.Info("Topological sorting completed successfully. Ready to run %d scenarios.", len(sorted))
 	return nil
 }

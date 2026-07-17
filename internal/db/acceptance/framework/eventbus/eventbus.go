@@ -1,9 +1,4 @@
-// Package eventbus implements a thread-safe, asynchronous event bus with context propagation,
-// error isolation, and graceful shutdown. It decouples execution orchestrators from telemetry,
-// loggers, and artifact archivers.
-//
-// Dependency Rules:
-// - Imports: interfaces, types, logging.
+// Package eventbus provides a thread-safe async event dispatcher with panic isolation.
 package eventbus
 
 import (
@@ -18,23 +13,28 @@ import (
 )
 
 type subscriberWrapper struct {
-	sub interfaces.EventSubscriber
-	ch  chan types.Event
+	sub    interfaces.EventSubscriber
+	ch     chan types.Event
+	closed sync.Once
 }
 
-// EventBus dispatches lifecycle events asynchronously to registered subscribers.
+func (w *subscriberWrapper) close() {
+	w.closed.Do(func() { close(w.ch) })
+}
+
+// EventBus dispatches lifecycle events to subscribers.
 type EventBus struct {
 	mu          sync.RWMutex
 	subscribers map[string]*subscriberWrapper
 	logger      *logging.Logger
-	wg          sync.WaitGroup
-	subWg       sync.WaitGroup
+	dispatchWG  sync.WaitGroup
+	subWG       sync.WaitGroup
 	ctx         context.Context
 	cancel      context.CancelFunc
 	running     bool
 }
 
-// NewEventBus creates a new EventBus instance.
+// NewEventBus creates a bus.
 func NewEventBus(log *logging.Logger) *EventBus {
 	return &EventBus{
 		subscribers: make(map[string]*subscriberWrapper),
@@ -42,22 +42,20 @@ func NewEventBus(log *logging.Logger) *EventBus {
 	}
 }
 
-// Start launches the event bus processing loop.
+// Start enables publishing.
 func (b *EventBus) Start(ctx context.Context) error {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.running {
-		b.mu.Unlock()
 		return nil
 	}
 	b.ctx, b.cancel = context.WithCancel(ctx)
 	b.running = true
-	b.mu.Unlock()
-
 	b.logger.Info("ATF EventBus started")
 	return nil
 }
 
-// Stop gracefully shuts down the event bus, flushing pending events to subscribers.
+// Stop drains in-flight dispatches and subscriber loops.
 func (b *EventBus) Stop() error {
 	b.mu.Lock()
 	if !b.running {
@@ -65,121 +63,107 @@ func (b *EventBus) Stop() error {
 		return nil
 	}
 	b.running = false
-	b.cancel()
-	b.mu.Unlock()
-
-	// Wait for any active asynchronous event dispatches to finish
-	b.wg.Wait()
-
-	b.mu.Lock()
-	// Close all subscriber channels to signal shutdown
-	for _, sub := range b.subscribers {
-		close(sub.ch)
+	if b.cancel != nil {
+		b.cancel()
+	}
+	subs := make([]*subscriberWrapper, 0, len(b.subscribers))
+	for _, s := range b.subscribers {
+		subs = append(subs, s)
 	}
 	b.subscribers = make(map[string]*subscriberWrapper)
 	b.mu.Unlock()
 
-	// Wait for all subscriber loops to drain and exit
-	b.subWg.Wait()
-
-	b.logger.Info("ATF EventBus stopped cleanly")
+	b.dispatchWG.Wait()
+	for _, s := range subs {
+		s.close()
+	}
+	b.subWG.Wait()
+	b.logger.Info("ATF EventBus stopped")
 	return nil
 }
 
-// Subscribe registers an event observer to receive future event dispatches.
+// Subscribe registers a subscriber. Bus must be started.
 func (b *EventBus) Subscribe(sub interfaces.EventSubscriber) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
+	if !b.running {
+		return fmt.Errorf("eventbus: not started")
+	}
 	name := sub.Name()
 	if _, exists := b.subscribers[name]; exists {
 		return fmt.Errorf("subscriber %s already registered", name)
 	}
-
-	wrapper := &subscriberWrapper{
+	w := &subscriberWrapper{
 		sub: sub,
-		ch:  make(chan types.Event, 100), // Buffer to avoid blocking dispatch
+		ch:  make(chan types.Event, 64),
 	}
-
-	b.subscribers[name] = wrapper
-	b.subWg.Add(1)
-	go b.subscriberLoop(wrapper)
-
-	b.logger.Debug("Subscriber %s registered successfully", name)
+	b.subscribers[name] = w
+	b.subWG.Add(1)
+	go b.subscriberLoop(w)
 	return nil
 }
 
-// Unsubscribe removes a registered observer.
+// Unsubscribe removes a subscriber and waits for its loop to exit.
 func (b *EventBus) Unsubscribe(sub interfaces.EventSubscriber) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	name := sub.Name()
-	wrapper, exists := b.subscribers[name]
+	w, exists := b.subscribers[name]
 	if !exists {
+		b.mu.Unlock()
 		return fmt.Errorf("subscriber %s not found", name)
 	}
-
 	delete(b.subscribers, name)
-	close(wrapper.ch) // Signal subscriberLoop to exit
-
-	b.logger.Debug("Subscriber %s unsubscribed", name)
+	b.mu.Unlock()
+	w.close()
 	return nil
 }
 
-// Publish writes an event to all active subscriber queues asynchronously.
-func (b *EventBus) Publish(ctx context.Context, et types.EventType, payload interface{}) {
+// Publish enqueues an event for all subscribers (non-blocking with drop on full/cancel).
+func (b *EventBus) Publish(ctx context.Context, et types.EventType, payload any) {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-
 	if !b.running {
-		b.logger.Warn("Attempted to publish event to stopped EventBus")
+		b.mu.RUnlock()
 		return
 	}
-
-	event := types.Event{
-		Type:      et,
-		Timestamp: time.Now(),
-		Payload:   payload,
+	subs := make([]*subscriberWrapper, 0, len(b.subscribers))
+	for _, w := range b.subscribers {
+		subs = append(subs, w)
 	}
+	busCtx := b.ctx
+	b.mu.RUnlock()
 
-	// Dispatch asynchronously to prevent slow subscribers from blocking the runner
-	for _, wrapper := range b.subscribers {
-		b.wg.Add(1)
+	event := types.Event{Type: et, Timestamp: time.Now(), Payload: payload}
+	for _, w := range subs {
+		b.dispatchWG.Add(1)
 		go func(w *subscriberWrapper, ev types.Event) {
-			defer b.wg.Done()
+			defer b.dispatchWG.Done()
 			select {
 			case w.ch <- ev:
 			case <-ctx.Done():
-				b.logger.Error("Event dispatch timed out for subscriber: %s", w.sub.Name())
-			case <-b.ctx.Done():
+				b.logger.Warn("event drop (caller ctx) subscriber=%s", w.sub.Name())
+			case <-busCtx.Done():
+				b.logger.Warn("event drop (bus stopped) subscriber=%s", w.sub.Name())
 			}
-		}(wrapper, event)
+		}(w, event)
 	}
 }
 
-// subscriberLoop drains incoming events from the channel and executes the callback.
-func (b *EventBus) subscriberLoop(wrapper *subscriberWrapper) {
-	defer b.subWg.Done()
-
-	for event := range wrapper.ch {
-		b.invokeSubscriber(wrapper.sub, event)
+func (b *EventBus) subscriberLoop(w *subscriberWrapper) {
+	defer b.subWG.Done()
+	for event := range w.ch {
+		b.invokeSubscriber(w.sub, event)
 	}
 }
 
-// invokeSubscriber handles subscriber callback execution and isolates panics/errors.
 func (b *EventBus) invokeSubscriber(sub interfaces.EventSubscriber, ev types.Event) {
-	// Guard against panic inside the subscriber implementation
 	defer func() {
 		if r := recover(); r != nil {
-			b.logger.Error("Panic recovered inside subscriber %s: %v", sub.Name(), r)
+			b.logger.Error("panic in subscriber %s: %v", sub.Name(), r)
 		}
 	}()
-
 	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
 	defer cancel()
-
 	if err := sub.OnEvent(ctx, ev); err != nil {
-		b.logger.Error("Subscriber %s failed to process event: %v", sub.Name(), err)
+		b.logger.Error("subscriber %s error: %v", sub.Name(), err)
 	}
 }

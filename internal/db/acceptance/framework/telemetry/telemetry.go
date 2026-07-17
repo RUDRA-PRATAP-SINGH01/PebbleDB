@@ -41,7 +41,7 @@ func (t *TelemetryStore) Name() string {
 }
 
 // OnEvent consumes events from the EventBus to log timeline markers.
-func (t *TelemetryStore) OnEvent(ctx context.Context, event interface{}) error {
+func (t *TelemetryStore) OnEvent(ctx context.Context, event any) error {
 	ev, ok := event.(types.Event)
 	if !ok {
 		return nil
@@ -54,7 +54,7 @@ func (t *TelemetryStore) OnEvent(ctx context.Context, event interface{}) error {
 	case types.EventSubprocessStarted:
 		if session, ok := ev.Payload.(types.ExecutionSession); ok {
 			t.ensureRecordLocked(session.ScenarioID)
-			t.recordMetricLocked(session.ScenarioID, "subprocess_restarts", 1.0, true)
+			t.recordMetricLocked(session.ScenarioID, "subprocess_starts", 1.0, true)
 		}
 	}
 	return nil
@@ -107,10 +107,10 @@ type CampaignSummaryReport struct {
 
 // ScenarioStats aggregates telemetry values for a single scenario.
 type ScenarioStats struct {
-	Counters       map[string]float64            `json:"counters"`
-	Gauges         map[string]float64            `json:"gauges"`
-	StageAverages  map[string]float64            `json:"stage_averages_ms"`
-	StageMaximus   map[string]float64            `json:"stage_maximums_ms"`
+	Counters      map[string]float64 `json:"counters"`
+	Gauges        map[string]float64 `json:"gauges"`
+	StageAverages map[string]float64 `json:"stage_averages_ms"`
+	StageMaximus  map[string]float64 `json:"stage_maximums_ms"`
 }
 
 // Dump compiles and returns the campaign summary metrics.

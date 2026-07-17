@@ -1,13 +1,8 @@
-// Package session provides session trackers, lifecycle validation engines,
-// and state transition checkers to enforce immutable execution boundaries.
-//
-// Dependency Rules:
-// - Imports: interfaces, types, errors.
+// Package session enforces scenario/campaign lifecycle state machines.
 package session
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -16,7 +11,7 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/types"
 )
 
-// AllowedTransitions maps each state to the states it can legally transition into.
+// AllowedTransitions maps each state to legal successors.
 var AllowedTransitions = map[types.State][]types.State{
 	types.StateInit: {
 		types.StateCampaignRunning,
@@ -36,9 +31,14 @@ var AllowedTransitions = map[types.State][]types.State{
 	},
 	types.StateSubprocessWriting: {
 		types.StateSubprocessCrashed,
+		types.StateSubprocessExited,
 		types.StateScenarioFailed,
 	},
 	types.StateSubprocessCrashed: {
+		types.StateDirectorySnapshoted,
+		types.StateScenarioFailed,
+	},
+	types.StateSubprocessExited: {
 		types.StateDirectorySnapshoted,
 		types.StateScenarioFailed,
 	},
@@ -68,7 +68,7 @@ var AllowedTransitions = map[types.State][]types.State{
 	},
 }
 
-// SessionTracker coordinates thread-safe state transition checking.
+// SessionTracker is a thread-safe lifecycle tracker.
 type SessionTracker struct {
 	mu        sync.RWMutex
 	sessionID string
@@ -76,7 +76,7 @@ type SessionTracker struct {
 	createdAt time.Time
 }
 
-// NewSessionTracker allocates a new SessionTracker with a generated UUID.
+// NewSessionTracker allocates a tracker with a random ID.
 func NewSessionTracker(initialState types.State) *SessionTracker {
 	return &SessionTracker{
 		sessionID: generateUUID(),
@@ -85,24 +85,20 @@ func NewSessionTracker(initialState types.State) *SessionTracker {
 	}
 }
 
-// ID returns the unique session UUID.
-func (s *SessionTracker) ID() string {
-	return s.sessionID
-}
+// ID returns the session identifier.
+func (s *SessionTracker) ID() string { return s.sessionID }
 
-// State returns the current session State.
+// State returns the current lifecycle state.
 func (s *SessionTracker) State() types.State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state
 }
 
-// CreatedAt returns the creation timestamp.
-func (s *SessionTracker) CreatedAt() time.Time {
-	return s.createdAt
-}
+// CreatedAt returns creation time.
+func (s *SessionTracker) CreatedAt() time.Time { return s.createdAt }
 
-// Transition moves the session to newState if the transition is allowed.
+// Transition moves to newState if allowed.
 func (s *SessionTracker) Transition(newState types.State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -111,24 +107,22 @@ func (s *SessionTracker) Transition(newState types.State) error {
 	if !ok {
 		return errors.NewStateError(fmt.Sprintf("stuck state: %s", s.state), nil)
 	}
-
-	valid := false
 	for _, a := range allowed {
 		if a == newState {
-			valid = true
-			break
+			s.state = newState
+			return nil
 		}
 	}
-
-	if !valid {
-		return errors.NewStateError(fmt.Sprintf("forbidden transition: %s -> %s", s.state, newState), nil)
-	}
-
-	s.state = newState
-	return nil
+	return errors.NewStateError(fmt.Sprintf("forbidden transition: %s -> %s", s.state, newState), nil)
 }
 
-// CampaignTracker wraps CampaignSession lifecycle operations.
+// MustTransition is Transition that panics only in tests via helper — prefer Transition.
+func (s *SessionTracker) Fail(reason error) error {
+	_ = reason
+	return s.Transition(types.StateScenarioFailed)
+}
+
+// CampaignTracker aggregates scenario results for a campaign.
 type CampaignTracker struct {
 	*SessionTracker
 	metadata  types.Metadata
@@ -136,7 +130,7 @@ type CampaignTracker struct {
 	mu        sync.Mutex
 }
 
-// NewCampaignTracker creates a new CampaignTracker.
+// NewCampaignTracker creates a campaign-level tracker.
 func NewCampaignTracker(meta types.Metadata) *CampaignTracker {
 	return &CampaignTracker{
 		SessionTracker: NewSessionTracker(types.StateInit),
@@ -145,14 +139,14 @@ func NewCampaignTracker(meta types.Metadata) *CampaignTracker {
 	}
 }
 
-// AddScenarioResult registers a completed scenario run outcome.
+// AddScenarioResult appends a scenario outcome.
 func (c *CampaignTracker) AddScenarioResult(res types.ScenarioResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.scenarios = append(c.scenarios, res)
 }
 
-// CompileResult aggregates all data into a CampaignResult report.
+// CompileResult builds the campaign report.
 func (c *CampaignTracker) CompileResult() types.CampaignResult {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -161,9 +155,8 @@ func (c *CampaignTracker) CompileResult() types.CampaignResult {
 		SessionID: c.ID(),
 		Passed:    true,
 		Metadata:  c.metadata,
-		Details:   c.scenarios,
+		Details:   append([]types.ScenarioResult(nil), c.scenarios...),
 	}
-
 	for _, s := range c.scenarios {
 		res.Summary.TotalScenarios++
 		switch s.StatusVal {
@@ -175,22 +168,19 @@ func (c *CampaignTracker) CompileResult() types.CampaignResult {
 		case types.StatusBlocked:
 			res.Summary.BlockedCount++
 			res.Passed = false
+		case types.StatusInconclusive:
+			res.Passed = false
 		}
 	}
-
 	return res
 }
 
 func generateUUID() string {
-	bytes := make([]byte, 16)
-	_, _ = rand.Read(bytes)
-	// mock basic UUID format
-	return fmt.Sprintf("%x-%x-%x-%x-%x", bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
-}
-
-// generateSecureHash creates a hash string for verification.
-func generateSecureHash() string {
-	bytes := make([]byte, 16)
-	_, _ = rand.Read(bytes)
-	return hex.EncodeToString(bytes)
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
