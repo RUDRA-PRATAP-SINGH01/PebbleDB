@@ -142,6 +142,9 @@ func TestDefaultRegistryOrder(t *testing.T) {
 		"iterator_verifier",
 		"range_scan_verifier",
 		"snapshot_verifier",
+		"directory_audit",
+		"manifest_audit",
+		"checkpoint_audit",
 	}
 	if len(names) != len(want) {
 		t.Fatalf("names=%v", names)

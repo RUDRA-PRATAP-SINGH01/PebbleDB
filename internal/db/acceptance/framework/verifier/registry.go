@@ -75,6 +75,9 @@ func DefaultRegistry() *Registry {
 		IteratorVerifier{},
 		RangeScanVerifier{},
 		SnapshotVerifier{},
+		DirectoryAudit{},
+		ManifestAudit{},
+		CheckpointAudit{},
 	} {
 		if err := r.Register(v); err != nil {
 			panic(err)
