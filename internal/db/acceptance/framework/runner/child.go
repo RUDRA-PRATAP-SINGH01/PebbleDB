@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db"
@@ -31,10 +32,39 @@ func (w *PebbleWriter) Flush() error {
 	return w.instance.ForceMemtableFlush()
 }
 
+// replayExpectedState re-applies the oracle's logical state as a second write
+// pass: live keys are Put with their oracle value and tombstoned keys are
+// Deleted again. Because every write is idempotent with respect to the oracle
+// (identical final value / tombstone status), the logical state is unchanged
+// while a second in-memory generation is produced. Flushing after this pass
+// yields a second SSTable, which is the precondition for exercising the
+// compaction crash points.
+func replayExpectedState(writer *PebbleWriter, expected *dataset.MapExpectedState) error {
+	for _, key := range expected.Keys() {
+		snap, ok := expected.Get(key)
+		if !ok {
+			continue
+		}
+		if snap.Tombstone {
+			if err := writer.Delete(key); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := writer.Put(key, snap.Value); err != nil {
+			return err
+		}
+	}
+	return writer.Sync()
+}
+
 // RunChildProcessMain is the ATF child entrypoint. It must:
 //  1. write dataset
 //  2. persist expected_state.json (before any crash)
-//  3. optionally ForceMemtableFlush to hit PEBBLEDB_CRASH_AT
+//  3. drive the engine to the requested PEBBLEDB_CRASH_AT crash point:
+//     - flush_* points are reached by ForceMemtableFlush
+//     - compact_* points are reached by producing two SSTables and then
+//     ForceCompaction (see replayExpectedState)
 //  4. clear crash env before Close so shutdown flush cannot re-trigger crash
 func RunChildProcessMain() {
 	scenarioID := os.Getenv("PEBBLEDB_SCENARIO_ID")
@@ -90,14 +120,42 @@ func RunChildProcessMain() {
 		os.Exit(1)
 	}
 
+	isCompaction := strings.HasPrefix(crashAt, "compact_")
+
 	if doFlush {
-		// ForceMemtableFlush hits maybeCrash(crashAt) inside the engine.
-		// On crash this call never returns (os.Exit(2)).
+		// First flush turns the generated memtable into SST #1.
+		// For flush_* crash points this call hits maybeCrash(crashAt) and never
+		// returns (os.Exit(2)). For compact_* points the flush hooks do not match
+		// crashAt, so it completes normally.
 		if err := writer.Flush(); err != nil {
 			_ = os.Unsetenv("PEBBLEDB_CRASH_AT")
 			_ = instance.Close()
 			fmt.Fprintf(os.Stderr, "atf-child: force flush failed: %v\n", err)
 			os.Exit(1)
+		}
+
+		if isCompaction {
+			// Produce a second SSTable with identical logical content, then run a
+			// synchronous compaction so maybeCrash(compact_*) fires deterministically.
+			if err := replayExpectedState(writer, expected); err != nil {
+				_ = os.Unsetenv("PEBBLEDB_CRASH_AT")
+				_ = instance.Close()
+				fmt.Fprintf(os.Stderr, "atf-child: replay for compaction failed: %v\n", err)
+				os.Exit(1)
+			}
+			if err := writer.Flush(); err != nil {
+				_ = os.Unsetenv("PEBBLEDB_CRASH_AT")
+				_ = instance.Close()
+				fmt.Fprintf(os.Stderr, "atf-child: second flush failed: %v\n", err)
+				os.Exit(1)
+			}
+			// On crash this never returns (os.Exit(2)).
+			if err := instance.ForceCompaction(); err != nil {
+				_ = os.Unsetenv("PEBBLEDB_CRASH_AT")
+				_ = instance.Close()
+				fmt.Fprintf(os.Stderr, "atf-child: force compaction failed: %v\n", err)
+				os.Exit(1)
+			}
 		}
 	}
 
