@@ -1,4 +1,3 @@
-// Package runner orchestrates scenario execution.
 package runner
 
 import (
@@ -12,108 +11,119 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/dataset"
 )
 
-// PebbleWriter wraps a *db.DB instance to implement interfaces.LogicalWriter.
+// PebbleWriter adapts *db.DB to interfaces.LogicalWriter.
 type PebbleWriter struct {
 	instance *db.DB
 }
 
-// NewPebbleWriter allocates a PebbleWriter wrapper.
+// NewPebbleWriter wraps a DB handle.
 func NewPebbleWriter(instance *db.DB) *PebbleWriter {
 	return &PebbleWriter{instance: instance}
 }
 
-// Put writes key and value.
-func (w *PebbleWriter) Put(key, value []byte) error {
-	return w.instance.Put(key, value)
-}
+func (w *PebbleWriter) Put(key, value []byte) error { return w.instance.Put(key, value) }
+func (w *PebbleWriter) Delete(key []byte) error     { return w.instance.Delete(key) }
+func (w *PebbleWriter) Sync() error                 { return w.instance.Sync() }
+func (w *PebbleWriter) Close() error                { return w.instance.Close() }
 
-// Delete writes tombstone.
-func (w *PebbleWriter) Delete(key []byte) error {
-	return w.instance.Delete(key)
-}
-
-// Flush triggers database flush.
+// Flush forces memtable → SST (acceptance crash points live on this path).
 func (w *PebbleWriter) Flush() error {
-	return w.instance.FlushPendingBatch()
+	return w.instance.ForceMemtableFlush()
 }
 
-// Sync flushes write ahead logs.
-func (w *PebbleWriter) Sync() error {
-	return w.instance.Sync()
-}
-
-// Close closes database connection.
-func (w *PebbleWriter) Close() error {
-	return w.instance.Close()
-}
-
-// RunChildProcessMain executes inside the child process.
-// It parses env variables, opens PebbleDB, runs dataset writing, and exits cleanly.
+// RunChildProcessMain is the ATF child entrypoint. It must:
+//  1. write dataset
+//  2. persist expected_state.json (before any crash)
+//  3. optionally ForceMemtableFlush to hit PEBBLEDB_CRASH_AT
+//  4. clear crash env before Close so shutdown flush cannot re-trigger crash
 func RunChildProcessMain() {
 	scenarioID := os.Getenv("PEBBLEDB_SCENARIO_ID")
-	fmt.Fprintf(os.Stderr, "child process: starting scenario %s\n", scenarioID)
+	fmt.Fprintf(os.Stderr, "atf-child: scenario=%s\n", scenarioID)
+
 	testDir := os.Getenv("PEBBLEDB_TEST_DIR")
 	if testDir == "" {
-		fmt.Fprintf(os.Stderr, "child process: missing PEBBLEDB_TEST_DIR\n")
+		fmt.Fprintf(os.Stderr, "atf-child: missing PEBBLEDB_TEST_DIR\n")
 		os.Exit(1)
 	}
 
-	memtableSize, err := strconv.ParseInt(os.Getenv("PEBBLEDB_MEMTABLE_SIZE"), 10, 64)
-	if err != nil {
-		memtableSize = 4 << 20 // default 4MB
-	}
-
-	compactionThreshold, err := strconv.Atoi(os.Getenv("PEBBLEDB_COMPACTION_THRESHOLD"))
-	if err != nil {
-		compactionThreshold = 4
-	}
-
+	memtableSize := parseInt64Env("PEBBLEDB_MEMTABLE_SIZE", 4<<20)
+	compactionThreshold := int(parseInt64Env("PEBBLEDB_COMPACTION_THRESHOLD", 4))
 	syncWrites, _ := strconv.ParseBool(os.Getenv("PEBBLEDB_SYNC_WRITES"))
+	seed := parseInt64Env("PEBBLEDB_SEED", 12345)
+	keyCount := int(parseInt64Env("PEBBLEDB_KEY_COUNT", 100))
+	overwriteCount := int(parseInt64Env("PEBBLEDB_OVERWRITE_COUNT", 10))
+	tombstoneEvery := int(parseInt64Env("PEBBLEDB_TOMBSTONE_EVERY", 5))
+	doFlush := os.Getenv("PEBBLEDB_FORCE_FLUSH") != "0"
+	crashAt := os.Getenv("PEBBLEDB_CRASH_AT")
 
-	// Create and Open PebbleDB Options
-	opts := db.Options{
+	instance, err := db.Open(db.Options{
 		Dir:                 testDir,
 		MemtableSize:        memtableSize,
 		CompactionThreshold: compactionThreshold,
 		SyncWrites:          syncWrites,
-	}
-
-	instance, err := db.Open(opts)
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "child process: open database failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "atf-child: open failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	writer := NewPebbleWriter(instance)
+	gen := dataset.NewSequentialGenerator(seed, keyCount, overwriteCount, tombstoneEvery)
 
-	// In Milestone 2 we only support standard Sequential Generator
-	seed := int64(12345)
-	if sVal, err := strconv.ParseInt(os.Getenv("PEBBLEDB_SEED"), 10, 64); err == nil {
-		seed = sVal
-	}
-
-	keyCount := 100
-	if kVal, err := strconv.Atoi(os.Getenv("PEBBLEDB_KEY_COUNT")); err == nil {
-		keyCount = kVal
-	}
-
-	gen := dataset.NewSequentialGenerator(seed, keyCount, 10, 5)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	_, err = gen.Generate(ctx, writer)
+	expected, err := gen.Generate(ctx, writer)
 	if err != nil {
 		_ = instance.Close()
-		fmt.Fprintf(os.Stderr, "child process: dataset generation failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "atf-child: generate failed: %v\n", err)
+		os.Exit(1)
+	}
+	expected.ScenarioID = scenarioID
+	expected.ExecutionID = os.Getenv("PEBBLEDB_EXECUTION_ID")
+
+	// Persist oracle BEFORE crash so parent can verify after process death.
+	if err := expected.Persist(testDir); err != nil {
+		_ = os.Unsetenv("PEBBLEDB_CRASH_AT")
+		_ = instance.Close()
+		fmt.Fprintf(os.Stderr, "atf-child: persist expected state failed: %v\n", err)
 		os.Exit(1)
 	}
 
+	if doFlush {
+		// ForceMemtableFlush hits maybeCrash(crashAt) inside the engine.
+		// On crash this call never returns (os.Exit(2)).
+		if err := writer.Flush(); err != nil {
+			_ = os.Unsetenv("PEBBLEDB_CRASH_AT")
+			_ = instance.Close()
+			fmt.Fprintf(os.Stderr, "atf-child: force flush failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// Prevent Close()-induced flush from re-entering crash points.
+	_ = os.Unsetenv("PEBBLEDB_CRASH_AT")
 	if err := instance.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "child process: close database failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "atf-child: close failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Exit code 0 signals success to parent process
+	if crashAt != "" && doFlush {
+		// Crash point was set but process survived — treat as incomplete crash coverage.
+		fmt.Fprintf(os.Stderr, "atf-child: crash point %q did not fire\n", crashAt)
+		os.Exit(1)
+	}
 	os.Exit(0)
+}
+
+func parseInt64Env(key string, def int64) int64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return def
+	}
+	return n
 }

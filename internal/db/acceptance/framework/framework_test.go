@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/registry"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/resource"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/runner"
-	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/scheduler"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/session"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/telemetry"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/types"
@@ -26,32 +24,24 @@ func init() {
 	}
 }
 
-// MockSubscriber receives lifecycle events to verify bus dispatching.
-type MockSubscriber struct {
-	mu     sync.Mutex
-	events []types.Event
+// TestATFChildNop exists solely as a spawn target for ATF subprocesses.
+// Child init() exits before this body runs.
+func TestATFChildNop(t *testing.T) {
+	t.Helper()
 }
 
-// Name returns the identifier of the subscriber.
-func (m *MockSubscriber) Name() string {
-	return "mock_subscriber"
+func TestATFCrashRecoveryFlushAfterManifest(t *testing.T) {
+	runATFCrashScenario(t, "EXS-010", "flush_after_manifest")
 }
 
-// OnEvent saves events in thread-safe slice.
-func (m *MockSubscriber) OnEvent(ctx context.Context, event interface{}) error {
-	ev, ok := event.(types.Event)
-	if !ok {
-		return nil
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.events = append(m.events, ev)
-	return nil
+func TestATFCrashRecoveryFlushAfterWalState(t *testing.T) {
+	runATFCrashScenario(t, "EXS-011", "flush_after_wal_state")
 }
 
-func TestFrameworkFoundationBuildAndExecution(t *testing.T) {
-	// Initialize core leaf systems
-	logFile := filepath.Join(t.TempDir(), "atf.log")
+func runATFCrashScenario(t *testing.T, id, crashPoint string) {
+	t.Helper()
+	base := t.TempDir()
+	logFile := filepath.Join(base, "atf.log")
 	f, err := os.Create(logFile)
 	if err != nil {
 		t.Fatal(err)
@@ -59,130 +49,89 @@ func TestFrameworkFoundationBuildAndExecution(t *testing.T) {
 	defer f.Close()
 
 	logger := logging.NewLogger(f, logging.LevelDebug)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
-	// 1. Config validation
-	loader := config.NewConfigLoader(t.TempDir(), []string{"--parallelism=2"})
+	loader := config.NewConfigLoader(base, []string{"--parallelism=1"})
 	conf, err := loader.Load("")
 	if err != nil {
-		t.Fatalf("config load failed: %v", err)
-	}
-	if conf.Parallelism != 2 {
-		t.Fatalf("config CLI override failed: got parallelism %d, want 2", conf.Parallelism)
+		t.Fatalf("config: %v", err)
 	}
 
-	// 2. Registry checks
 	reg := registry.NewMapRegistry()
-	mockScenario := types.ScenarioDefinition{
-		IDStr:           "EXS-001",
-		NameStr:         "WALOnlyRecovery_MemtableFrozen",
+	scenario := types.ScenarioDefinition{
+		IDStr:           id,
+		NameStr:         "FlushCrash_" + crashPoint,
 		VersionStr:      "1.0.0",
 		PriorityVal:     types.P1,
-		RequirementsVal: []string{"DB-REC-001"},
+		RequirementsVal: []string{"DB-REC-005"},
 		ContractsVal:    []string{"C-DUR-01"},
-		CapabilitiesVal: []string{"requires_wal"},
-		OptionsMap:      make(map[string]interface{}),
-		CrashPointStr:   "flush_after_manifest",
-		VerifyDAGMap:    make(map[string][]string),
+		CapabilitiesVal: []string{"requires_wal", "requires_flush"},
+		OptionsMap: map[string]string{
+			"memtable_size_bytes": "1048576",
+			"key_count":           "40",
+			"overwrite_count":     "4",
+			"tombstone_every":     "5",
+			"seed":                "99",
+		},
+		CrashPointStr: crashPoint,
+		VerifyDAGMap:  map[string][]string{"get_verifier": nil, "scan_verifier": {"get_verifier"}},
 	}
-
-	if err := reg.Register(mockScenario); err != nil {
-		t.Fatalf("registry register failed: %v", err)
+	if err := reg.Register(scenario); err != nil {
+		t.Fatal(err)
 	}
-
-	found, err := reg.Lookup("EXS-001")
+	found, err := reg.Lookup(id)
 	if err != nil {
-		t.Fatalf("registry lookup failed: %v", err)
-	}
-	if found.Name() != "WALOnlyRecovery_MemtableFrozen" {
-		t.Fatalf("wrong scenario lookup result name: %s", found.Name())
+		t.Fatal(err)
 	}
 
-	// 3. EventBus start and subscriber registration
 	bus := eventbus.NewEventBus(logger)
 	if err := bus.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
 	defer bus.Stop()
 
-	sub := &MockSubscriber{}
-	if err := bus.Subscribe(sub); err != nil {
-		t.Fatal(err)
-	}
-
-	// 4. Telemetry and Resource setup
 	ts := telemetry.NewTelemetryStore()
 	if err := bus.Subscribe(ts); err != nil {
 		t.Fatal(err)
 	}
 
 	rm := resource.NewResourceManager(logger, conf.BaseDir, 4, 1024, 100)
+	rm.SetRetainArtifacts(false)
 
-	// 5. Scheduler queue submit and sort
-	sched := scheduler.NewCampaignScheduler(logger, bus, rm, conf.Parallelism)
-	if err := sched.Submit(mockScenario); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := sched.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	defer sched.Stop()
-
-	// 6. Session execution run through runner
-	campaign := session.NewCampaignTracker(types.Metadata{
-		PebbleCommit: "beefdead",
-		GoVersion:    "1.25",
-		Platform:     "windows",
-		Timestamp:    time.Now(),
-	})
-	if err := campaign.Transition(types.StateCampaignRunning); err != nil {
-		t.Fatal(err)
-	}
-
-	scenTracker := session.NewSessionTracker(types.StateScenarioRunning)
-	campaign.AddScenarioResult(types.ScenarioResult{
-		ScenarioID: found.ID(),
-		StatusVal:  types.StatusPass,
-	})
-
+	tracker := session.NewSessionTracker(types.StateScenarioRunning)
 	run := runner.NewScenarioRunner(logger, bus, rm, ts)
-	execResultVal, err := run.Run(ctx, found, scenTracker)
+	result, err := run.Run(ctx, found, tracker)
 	if err != nil {
-		t.Fatalf("runner execution failed: %v", err)
+		t.Fatalf("ATF run failed: %v", err)
 	}
+	if result.StatusVal != types.StatusPass {
+		t.Fatalf("expected PASS, got %s", result.StatusVal)
+	}
+	if len(result.Executions) != 1 || result.Executions[0].ExitCode != 2 {
+		t.Fatalf("expected child exit 2 (crash), got %+v", result.Executions)
+	}
+}
 
-	execRes, ok := execResultVal.(types.ScenarioResult)
-	if !ok {
-		t.Fatalf("expected ScenarioResult execution outcome, got %T", execResultVal)
-	}
-	if execRes.StatusVal != types.StatusPass {
-		t.Fatalf("scenario failed: expected StatusPass, got %s", execRes.StatusVal)
-	}
-
-	// Wait briefly for asynchronous subscriber processing
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify metrics capture
-	metricsVal := ts.Dump()
-	metricsReport, ok := metricsVal.(telemetry.CampaignSummaryReport)
-	if !ok {
-		t.Fatalf("expected CampaignSummaryReport, got %T", metricsVal)
-	}
-	scStats, exists := metricsReport.Scenarios["EXS-001"]
-	if !exists {
-		t.Fatal("metrics report missing EXS-001 stats")
-	}
-	if scStats.Counters["subprocess_restarts"] != 1.0 {
-		t.Fatalf("telemetry missing subprocess_restarts count: got %v, want 1.0", scStats.Counters["subprocess_restarts"])
-	}
-
-	// Verify Campaign compiled report passes
-	if err := campaign.Transition(types.StateCampaignCompleted); err != nil {
+func TestResourceManagerCancelWhileWaiting(t *testing.T) {
+	logger := logging.NewLogger(os.Stderr, logging.LevelError)
+	rm := resource.NewResourceManager(logger, t.TempDir(), 1, 64, 10)
+	ctx := context.Background()
+	r1, err := rm.Reserve(ctx, types.ResourceRequest{CPUs: 1, MemoryMB: 1, FileDescriptor: 1})
+	if err != nil {
 		t.Fatal(err)
 	}
-	campResult := campaign.CompileResult()
-	if !campResult.Passed {
-		t.Fatal("compiled campaign result reports failure")
+
+	ctx2, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err = rm.Reserve(ctx2, types.ResourceRequest{CPUs: 1, MemoryMB: 1, FileDescriptor: 1})
+	if err == nil {
+		t.Fatal("expected context cancellation while waiting")
+	}
+	if err := rm.Release(r1); err != nil {
+		t.Fatal(err)
+	}
+	if err := rm.Release(r1); err != nil {
+		t.Fatal(err)
 	}
 }

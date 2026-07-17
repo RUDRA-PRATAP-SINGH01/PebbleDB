@@ -1,14 +1,12 @@
-// Package runner orchestrates the execution lifecycle of individual acceptance scenarios,
-// advancing session states, publishing lifecycle markers, and coordinating subprocess controllers.
-//
-// Dependency Rules:
-// - Imports: interfaces, types, errors, logging, eventbus, telemetry, resource, session.
+// Package runner orchestrates ATF scenario execution: child write/crash → reopen → verify.
 package runner
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/crash"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/errors"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/eventbus"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/interfaces"
@@ -17,50 +15,62 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/session"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/telemetry"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/types"
+	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/verifier"
 )
 
-// ScenarioRunner orchestrates the subprocess execution campaign for a scenario.
+// ScenarioRunner executes one acceptance scenario end-to-end.
 type ScenarioRunner struct {
-	logger      *logging.Logger
-	eventBus    *eventbus.EventBus
-	resourceMgr *resource.ResourceManager
-	telemetry   *telemetry.TelemetryStore
-	subCtrl     *SubprocessController
+	logger       *logging.Logger
+	eventBus     *eventbus.EventBus
+	resourceMgr  *resource.ResourceManager
+	telemetry    *telemetry.TelemetryStore
+	subCtrl      *SubprocessController
+	crashManager *crash.Manager
 }
 
-// NewScenarioRunner allocates a ScenarioRunner.
+// NewScenarioRunner wires dependencies.
 func NewScenarioRunner(
 	logger *logging.Logger,
 	eb *eventbus.EventBus,
 	rm *resource.ResourceManager,
 	ts *telemetry.TelemetryStore,
 ) *ScenarioRunner {
+	reg, err := crash.NewBuiltinRegistry()
+	if err != nil {
+		// Builtins are static; failure indicates programmer error.
+		panic(err)
+	}
 	return &ScenarioRunner{
-		logger:      logger,
-		eventBus:    eb,
-		resourceMgr: rm,
-		telemetry:   ts,
-		subCtrl:     NewSubprocessController(logger, 30*time.Second),
+		logger:       logger,
+		eventBus:     eb,
+		resourceMgr:  rm,
+		telemetry:    ts,
+		subCtrl:      NewSubprocessController(logger, 90*time.Second),
+		crashManager: crash.NewManager(reg, logger, eb, ts),
 	}
 }
 
-// Run executes the complete child process run, transitioning states and publishing events.
+// Run executes write/crash subprocess, recovers, and verifies logical state.
+// It never returns StatusPass unless Get+Scan verifiers succeed.
 func (sr *ScenarioRunner) Run(
 	ctx context.Context,
 	scenario interfaces.Scenario,
-	sess interface{},
-) (interface{}, error) {
-	tracker, ok := sess.(*session.SessionTracker)
-	if !ok {
-		return nil, errors.NewExecutionError("invalid session tracker type", nil)
+	tracker *session.SessionTracker,
+) (types.ScenarioResult, error) {
+	id := scenario.ID()
+	sr.logger.Info("ATF run start scenario=%s crash=%s", id, scenario.CrashPoint())
+
+	fail := func(stage string, err error) (types.ScenarioResult, error) {
+		_ = tracker.Transition(types.StateScenarioFailed)
+		sr.telemetry.RecordMetric(id, "failures_"+stage, 1)
+		return types.ScenarioResult{
+			ScenarioID: id,
+			StatusVal:  types.StatusFail,
+		}, errors.NewExecutionError(stage, err)
 	}
 
-	id := scenario.ID()
-	sr.logger.Info("Executing run campaign for scenario: %s", id)
-
-	// 1. Prepare Execution Session State
 	if err := tracker.Transition(types.StateExecutionPrepared); err != nil {
-		return nil, err
+		return fail("prepare", err)
 	}
 
 	execSession := types.ExecutionSession{
@@ -71,90 +81,120 @@ func (sr *ScenarioRunner) Run(
 		StartTime:  time.Now(),
 	}
 
-	// 2. Resource Allocation
-	req := types.ResourceRequest{
-		CPUs:           1,
-		MemoryMB:       64,
-		FileDescriptor: 10,
-	}
+	req := types.ResourceRequest{CPUs: 1, MemoryMB: 128, FileDescriptor: 32}
 	alloc, err := sr.resourceMgr.Reserve(ctx, req)
 	if err != nil {
-		return nil, errors.NewExecutionError("resource reservation failed", err)
+		return fail("reserve", err)
 	}
 	defer sr.resourceMgr.Release(alloc)
 
-	// Allocate temporary sandbox folder namespace
 	tempDir, err := sr.resourceMgr.AllocateTempDir(id)
 	if err != nil {
-		return nil, err
+		return fail("tempdir", err)
 	}
-	defer sr.resourceMgr.CleanTempDir(tempDir)
 	execSession.TempDir = tempDir
+	passed := false
+	defer func() {
+		_ = sr.resourceMgr.RetainOrClean(tempDir, passed)
+	}()
 
-	// 3. Subprocess Write/Execution Stage
 	if err := tracker.Transition(types.StateSubprocessWriting); err != nil {
-		return nil, err
+		return fail("writing", err)
 	}
 	execSession.StateVal = types.StateSubprocessWriting
-
-	// Publish Event indicating subprocess starting
 	sr.eventBus.Publish(ctx, types.EventSubprocessStarted, execSession)
 
-	// Launch Child Subprocess
-	execRes, err := sr.subCtrl.RunSubprocess(ctx, execSession, scenario)
+	crashDecision, err := sr.crashManager.EvaluateForScenario(
+		ctx,
+		execSession,
+		id,
+		scenario.CrashPoint(),
+		map[string]string{"PEBBLEDB_FORCE_FLUSH": "1"},
+	)
 	if err != nil {
-		_ = tracker.Transition(types.StateScenarioFailed)
-		sr.telemetry.RecordMetric(id, "subprocess_failures", 1.0)
-		return nil, err
+		return fail("crash_config", err)
 	}
 
+	execRes, err := sr.subCtrl.RunSubprocess(ctx, execSession, scenario, crashDecision)
+	if err != nil {
+		return fail("subprocess", err)
+	}
 	sr.telemetry.RecordDuration(id, "subprocess_runtime", time.Duration(execRes.Duration)*time.Millisecond)
 
-	// 4. Subprocess Crashed or Completed exit check
 	if execRes.ExitCode == 2 {
 		if err := tracker.Transition(types.StateSubprocessCrashed); err != nil {
-			return nil, err
+			return fail("crash_transition", err)
 		}
 		execSession.StateVal = types.StateSubprocessCrashed
 		sr.eventBus.Publish(ctx, types.EventSubprocessCrashed, execSession)
+	} else {
+		if scenario.CrashPoint() != "" {
+			return fail("crash_expected", fmt.Errorf("expected crash at %q but child exited 0", scenario.CrashPoint()))
+		}
+		if err := tracker.Transition(types.StateSubprocessExited); err != nil {
+			return fail("exit_transition", err)
+		}
+		execSession.StateVal = types.StateSubprocessExited
 	}
 
-	// 5. Directory Snapshot (conceptual log / snapshot placeholder for Milestone 2)
 	if err := tracker.Transition(types.StateDirectorySnapshoted); err != nil {
-		return nil, err
+		return fail("snapshot", err)
 	}
-	sr.telemetry.RecordDuration(id, "directory_snapshot", 1*time.Millisecond)
 
-	// 6. Recovery Reopen Stage (mock for Milestone 2)
 	if err := tracker.Transition(types.StateRecoveryAttempted); err != nil {
-		return nil, err
+		return fail("recovery_transition", err)
 	}
+	sr.eventBus.Publish(ctx, types.EventRecoveryStarted, execSession)
 
-	// 7. Verification Sweep Stage (mock for Milestone 2)
 	if err := tracker.Transition(types.StateVerificationRunning); err != nil {
-		return nil, err
+		return fail("verify_transition", err)
 	}
 
-	// 8. Evidence Collection Stage (mock for Milestone 2)
+	engine := verifier.NewVerificationEngine(
+		sr.logger,
+		sr.eventBus,
+		sr.telemetry,
+		verifier.DefaultRegistry(),
+		verifier.DefaultOracleLoader(),
+		verifier.DefaultEngineConfig(),
+	)
+	report, err := engine.Verify(verifier.Request{
+		Ctx:         ctx,
+		ScenarioID:  id,
+		ExecutionID: execSession.SessionID,
+		DatabaseDir: tempDir,
+		Config: types.Configuration{
+			CompactionThreshold: -1,
+		},
+	})
+	sr.eventBus.Publish(ctx, types.EventRecoveryFinished, execSession)
+	if err != nil || report == nil || !report.Passed {
+		_ = tracker.Transition(types.StateScenarioFailed)
+		nFail := 0
+		if report != nil {
+			nFail = report.FailedChecks
+		}
+		return types.ScenarioResult{
+			ScenarioID: id,
+			StatusVal:  types.StatusFail,
+			Executions: []types.ExecutionResult{execRes},
+		}, errors.NewValidationError(fmt.Sprintf("%d verification check(s) failed", nFail), err)
+	}
+
 	if err := tracker.Transition(types.StateEvidenceCollected); err != nil {
-		return nil, err
+		return fail("evidence", err)
 	}
-
-	// 9. Completion Stage
 	if err := tracker.Transition(types.StateScenarioCompleted); err != nil {
-		return nil, err
+		return fail("complete", err)
 	}
 
-	execSession.StateVal = types.StateScenarioCompleted
+	passed = true
 	execSession.EndTime = time.Now()
-
-	result := types.ScenarioResult{
+	sr.logger.Info("ATF run PASS scenario=%s live_keys=%d", id, report.ExpectedStatistics.ExpectedLiveKeys)
+	return types.ScenarioResult{
 		ScenarioID: id,
 		StatusVal:  types.StatusPass,
 		Retries:    0,
 		Executions: []types.ExecutionResult{execRes},
-	}
-
-	sr.logger.Info("Scenario execution finished successfully: %s", id)
-	return result, nil
+	}, nil
 }
