@@ -203,6 +203,18 @@ const (
 	EventRecoveryFinished
 	EventVerificationFinished
 	EventEvidenceZipped
+	EventVerificationStarted
+	EventVerifierStarted
+	EventVerifierPassed
+	EventVerifierFailed
+	EventVerificationAborted
+	EventCrashPointRegistered
+	EventCrashEvaluationStarted
+	EventCrashEvaluationFinished
+	EventCrashTriggered
+	EventCrashSkipped
+	EventCrashPolicyRejected
+	EventCrashHookExecuted
 )
 
 // Event is the payload dispatched via the event bus.
