@@ -1,5 +1,5 @@
-// Package runner orchestrates the execution lifecycle steps of individual acceptance scenarios,
-// advancing session states, publishing lifecycle markers, and coordinating verifiers.
+// Package runner orchestrates the execution lifecycle of individual acceptance scenarios,
+// advancing session states, publishing lifecycle markers, and coordinating subprocess controllers.
 //
 // Dependency Rules:
 // - Imports: interfaces, types, errors, logging, eventbus, telemetry, resource, session.
@@ -19,12 +19,13 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/types"
 )
 
-// ScenarioRunner implements interfaces.ScenarioRunner.
+// ScenarioRunner orchestrates the subprocess execution campaign for a scenario.
 type ScenarioRunner struct {
 	logger      *logging.Logger
 	eventBus    *eventbus.EventBus
 	resourceMgr *resource.ResourceManager
 	telemetry   *telemetry.TelemetryStore
+	subCtrl     *SubprocessController
 }
 
 // NewScenarioRunner allocates a ScenarioRunner.
@@ -39,11 +40,11 @@ func NewScenarioRunner(
 		eventBus:    eb,
 		resourceMgr: rm,
 		telemetry:   ts,
+		subCtrl:     NewSubprocessController(logger, 30*time.Second),
 	}
 }
 
-// Run executes the conceptual workflow of the scenario, driving state transitions and event markers.
-// Actual child process launching, crash timing, and physical checks are stubbed for Milestone 1.
+// Run executes the complete child process run, transitioning states and publishing events.
 func (sr *ScenarioRunner) Run(
 	ctx context.Context,
 	scenario interfaces.Scenario,
@@ -55,10 +56,7 @@ func (sr *ScenarioRunner) Run(
 	}
 
 	id := scenario.ID()
-	sr.logger.Info("Starting run execution sequence for scenario: %s", id)
-
-	// Inject logger into context for propagation
-	ctx = sr.logger.Inject(ctx)
+	sr.logger.Info("Executing run campaign for scenario: %s", id)
 
 	// 1. Prepare Execution Session State
 	if err := tracker.Transition(types.StateExecutionPrepared); err != nil {
@@ -73,7 +71,7 @@ func (sr *ScenarioRunner) Run(
 		StartTime:  time.Now(),
 	}
 
-	// 2. Resource Request Allocation (Conceptual slots)
+	// 2. Resource Allocation
 	req := types.ResourceRequest{
 		CPUs:           1,
 		MemoryMB:       64,
@@ -85,7 +83,7 @@ func (sr *ScenarioRunner) Run(
 	}
 	defer sr.resourceMgr.Release(alloc)
 
-	// Allocate temporary sandbox path
+	// Allocate temporary sandbox folder namespace
 	tempDir, err := sr.resourceMgr.AllocateTempDir(id)
 	if err != nil {
 		return nil, err
@@ -93,44 +91,54 @@ func (sr *ScenarioRunner) Run(
 	defer sr.resourceMgr.CleanTempDir(tempDir)
 	execSession.TempDir = tempDir
 
-	// 3. Subprocess Write Stage
+	// 3. Subprocess Write/Execution Stage
 	if err := tracker.Transition(types.StateSubprocessWriting); err != nil {
 		return nil, err
 	}
 	execSession.StateVal = types.StateSubprocessWriting
-	sr.eventBus.Publish(ctx, types.EventSubprocessStarted, execSession)
-	sr.telemetry.RecordDuration(id, "subprocess_write", 5*time.Millisecond)
 
-	// 4. Subprocess Crash Stage
-	if err := tracker.Transition(types.StateSubprocessCrashed); err != nil {
+	// Publish Event indicating subprocess starting
+	sr.eventBus.Publish(ctx, types.EventSubprocessStarted, execSession)
+
+	// Launch Child Subprocess
+	execRes, err := sr.subCtrl.RunSubprocess(ctx, execSession, scenario)
+	if err != nil {
+		_ = tracker.Transition(types.StateScenarioFailed)
+		sr.telemetry.RecordMetric(id, "subprocess_failures", 1.0)
 		return nil, err
 	}
-	execSession.StateVal = types.StateSubprocessCrashed
-	sr.eventBus.Publish(ctx, types.EventSubprocessCrashed, execSession)
 
-	// 5. Directory Snapshot Stage
+	sr.telemetry.RecordDuration(id, "subprocess_runtime", time.Duration(execRes.Duration)*time.Millisecond)
+
+	// 4. Subprocess Crashed or Completed exit check
+	if execRes.ExitCode == 2 {
+		if err := tracker.Transition(types.StateSubprocessCrashed); err != nil {
+			return nil, err
+		}
+		execSession.StateVal = types.StateSubprocessCrashed
+		sr.eventBus.Publish(ctx, types.EventSubprocessCrashed, execSession)
+	}
+
+	// 5. Directory Snapshot (conceptual log / snapshot placeholder for Milestone 2)
 	if err := tracker.Transition(types.StateDirectorySnapshoted); err != nil {
 		return nil, err
 	}
-	sr.telemetry.RecordDuration(id, "directory_snapshot", 2*time.Millisecond)
+	sr.telemetry.RecordDuration(id, "directory_snapshot", 1*time.Millisecond)
 
-	// 6. Recovery Open Stage
+	// 6. Recovery Reopen Stage (mock for Milestone 2)
 	if err := tracker.Transition(types.StateRecoveryAttempted); err != nil {
 		return nil, err
 	}
-	sr.telemetry.RecordDuration(id, "recovery_reopen", 10*time.Millisecond)
 
-	// 7. Verification Sweep Stage
+	// 7. Verification Sweep Stage (mock for Milestone 2)
 	if err := tracker.Transition(types.StateVerificationRunning); err != nil {
 		return nil, err
 	}
-	sr.telemetry.RecordDuration(id, "invariant_checks", 1*time.Millisecond)
 
-	// 8. Evidence Collection Stage
+	// 8. Evidence Collection Stage (mock for Milestone 2)
 	if err := tracker.Transition(types.StateEvidenceCollected); err != nil {
 		return nil, err
 	}
-	sr.telemetry.RecordDuration(id, "evidence_bundle", 3*time.Millisecond)
 
 	// 9. Completion Stage
 	if err := tracker.Transition(types.StateScenarioCompleted); err != nil {
@@ -144,15 +152,7 @@ func (sr *ScenarioRunner) Run(
 		ScenarioID: id,
 		StatusVal:  types.StatusPass,
 		Retries:    0,
-		Executions: []types.ExecutionResult{
-			{
-				RunIndex:      1,
-				ExitCode:      2,
-				Duration:      float64(time.Since(execSession.StartTime).Milliseconds()),
-				StderrSummary: "none (milestone 1 dry run)",
-				StateAtExit:   types.StateScenarioCompleted,
-			},
-		},
+		Executions: []types.ExecutionResult{execRes},
 	}
 
 	sr.logger.Info("Scenario execution finished successfully: %s", id)

@@ -20,6 +20,12 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/types"
 )
 
+func init() {
+	if os.Getenv("PEBBLEDB_CHILD_PROCESS") == "1" {
+		runner.RunChildProcessMain()
+	}
+}
+
 // MockSubscriber receives lifecycle events to verify bus dispatching.
 type MockSubscriber struct {
 	mu     sync.Mutex
