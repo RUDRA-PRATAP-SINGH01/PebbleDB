@@ -56,3 +56,24 @@ func (db *DB) ForceMemtableFlush() error {
 	db.notifyFlush()
 	return db.waitForPendingFlushDrain(30 * time.Second)
 }
+
+// ForceCompaction synchronously runs a single compaction cycle (merge the oldest
+// SSTables, commit the new file set to the manifest, swap the in-memory set, and
+// discard the inputs). Acceptance tests use it to deterministically reach the
+// compaction crash points (PEBBLEDB_CRASH_AT=compact_*) without depending on the
+// background compactor's timing.
+//
+// It requires at least CompactionThreshold live SSTables; otherwise it is a no-op.
+// It serializes against the background compactor via compactMu, so at most one
+// compaction runs at a time.
+func (db *DB) ForceCompaction() error {
+	db.mu.RLock()
+	closed := db.closed
+	db.mu.RUnlock()
+	if closed {
+		return ErrClosed
+	}
+	db.compactMu.Lock()
+	defer db.compactMu.Unlock()
+	return db.doCompaction()
+}
