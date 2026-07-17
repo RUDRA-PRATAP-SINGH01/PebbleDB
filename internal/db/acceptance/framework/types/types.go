@@ -133,10 +133,37 @@ type CampaignSession struct {
 
 // ScenarioResult records the outcome of a scenario execution campaign run.
 type ScenarioResult struct {
-	ScenarioID string            `json:"scenario_id"`
-	StatusVal  Status            `json:"status"`
-	Retries    int               `json:"retries"`
-	Executions []ExecutionResult `json:"executions"`
+	ScenarioID   string               `json:"scenario_id"`
+	StatusVal    Status               `json:"status"`
+	Retries      int                  `json:"retries"`
+	Executions   []ExecutionResult    `json:"executions"`
+	Verification *VerificationOutcome `json:"verification,omitempty"`
+	TempDir      string               `json:"temp_dir,omitempty"`
+	EvidencePath string               `json:"evidence_path,omitempty"`
+	FailureStage string               `json:"failure_stage,omitempty"`
+}
+
+// VerificationOutcome is a package-leaf summary of a verification report,
+// suitable for attaching to a ScenarioResult without importing the verifier
+// package. It is produced by the runner from the verifier's VerificationReport.
+type VerificationOutcome struct {
+	Passed       bool              `json:"passed"`
+	PassedChecks int               `json:"passed_checks"`
+	FailedChecks int               `json:"failed_checks"`
+	DurationMs   float64           `json:"duration_ms"`
+	Aborted      bool              `json:"aborted"`
+	AbortReason  string            `json:"abort_reason,omitempty"`
+	Modules      []ModuleOutcome   `json:"modules,omitempty"`
+	Failures     []VerifierFailure `json:"failures,omitempty"`
+}
+
+// ModuleOutcome summarizes a single verifier module's result.
+type ModuleOutcome struct {
+	Name         string  `json:"name"`
+	Passed       bool    `json:"passed"`
+	PassedChecks int     `json:"passed_checks"`
+	FailedChecks int     `json:"failed_checks"`
+	DurationMs   float64 `json:"duration_ms"`
 }
 
 // ExecutionSession represents a single isolated run of a scenario.

@@ -9,6 +9,7 @@ import (
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/crash"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/errors"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/eventbus"
+	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/evidence"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/interfaces"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/logging"
 	"github.com/RUDRA-PRATAP-SINGH01/PebbleDB/internal/db/acceptance/framework/resource"
@@ -26,6 +27,14 @@ type ScenarioRunner struct {
 	telemetry    *telemetry.TelemetryStore
 	subCtrl      *SubprocessController
 	crashManager *crash.Manager
+	evidence     *evidence.Collector
+}
+
+// SetEvidenceCollector enables failure-artifact packaging. When set, a failed
+// scenario's recovered directory and verification report are zipped into the
+// collector's base directory before cleanup runs.
+func (sr *ScenarioRunner) SetEvidenceCollector(c *evidence.Collector) {
+	sr.evidence = c
 }
 
 // NewScenarioRunner wires dependencies.
@@ -159,10 +168,11 @@ func (sr *ScenarioRunner) Run(
 		verifier.DefaultEngineConfig(),
 	)
 	report, err := engine.Verify(verifier.Request{
-		Ctx:         ctx,
-		ScenarioID:  id,
-		ExecutionID: execSession.SessionID,
-		DatabaseDir: tempDir,
+		Ctx:             ctx,
+		ScenarioID:      id,
+		ExecutionID:     execSession.SessionID,
+		DatabaseDir:     tempDir,
+		VerificationDAG: scenario.VerificationDAG(),
 		Config: types.Configuration{
 			CompactionThreshold: -1,
 		},
@@ -174,11 +184,16 @@ func (sr *ScenarioRunner) Run(
 		if report != nil {
 			nFail = report.FailedChecks
 		}
-		return types.ScenarioResult{
-			ScenarioID: id,
-			StatusVal:  types.StatusFail,
-			Executions: []types.ExecutionResult{execRes},
-		}, errors.NewValidationError(fmt.Sprintf("%d verification check(s) failed", nFail), err)
+		result := types.ScenarioResult{
+			ScenarioID:   id,
+			StatusVal:    types.StatusFail,
+			Executions:   []types.ExecutionResult{execRes},
+			Verification: toOutcome(report),
+			TempDir:      tempDir,
+			FailureStage: "verify",
+		}
+		result.EvidencePath = sr.collectEvidence(ctx, id, execSession.SessionID, tempDir, report, execRes)
+		return result, errors.NewValidationError(fmt.Sprintf("%d verification check(s) failed", nFail), err)
 	}
 
 	if err := tracker.Transition(types.StateEvidenceCollected); err != nil {
@@ -192,9 +207,77 @@ func (sr *ScenarioRunner) Run(
 	execSession.EndTime = time.Now()
 	sr.logger.Info("ATF run PASS scenario=%s live_keys=%d", id, report.ExpectedStatistics.ExpectedLiveKeys)
 	return types.ScenarioResult{
-		ScenarioID: id,
-		StatusVal:  types.StatusPass,
-		Retries:    0,
-		Executions: []types.ExecutionResult{execRes},
+		ScenarioID:   id,
+		StatusVal:    types.StatusPass,
+		Retries:      0,
+		Executions:   []types.ExecutionResult{execRes},
+		Verification: toOutcome(report),
+		TempDir:      tempDir,
 	}, nil
+}
+
+// collectEvidence packages the failed scenario's directory and report when an
+// evidence collector is configured. It returns the bundle path (or "").
+func (sr *ScenarioRunner) collectEvidence(
+	ctx context.Context,
+	scenarioID, executionID, dir string,
+	report *verifier.VerificationReport,
+	execRes types.ExecutionResult,
+) string {
+	if sr.evidence == nil {
+		return ""
+	}
+	bundle := map[string]any{
+		"scenario_id":  scenarioID,
+		"execution_id": executionID,
+		"execution":    execRes,
+		"verification": report,
+	}
+	path, err := sr.evidence.Package(scenarioID, executionID, dir, bundle)
+	if err != nil {
+		sr.logger.Warn("ATF evidence packaging failed scenario=%s: %v", scenarioID, err)
+		return ""
+	}
+	sr.logger.Warn("ATF evidence packaged scenario=%s bundle=%s", scenarioID, path)
+	sr.eventBus.Publish(ctx, types.EventEvidenceZipped, map[string]string{
+		"scenario_id":  scenarioID,
+		"execution_id": executionID,
+		"bundle":       path,
+	})
+	return path
+}
+
+// toOutcome projects a verifier report into the leaf types.VerificationOutcome
+// so it can be attached to a ScenarioResult without leaking the verifier package.
+func toOutcome(report *verifier.VerificationReport) *types.VerificationOutcome {
+	if report == nil {
+		return nil
+	}
+	out := &types.VerificationOutcome{
+		Passed:       report.Passed,
+		PassedChecks: report.PassedChecks,
+		FailedChecks: report.FailedChecks,
+		DurationMs:   float64(report.Duration.Microseconds()) / 1000.0,
+		Aborted:      report.Aborted,
+		AbortReason:  report.AbortReason,
+	}
+	for _, m := range report.ModuleResults {
+		out.Modules = append(out.Modules, types.ModuleOutcome{
+			Name:         m.Name,
+			Passed:       m.Passed,
+			PassedChecks: m.PassedChecks,
+			FailedChecks: m.FailedChecks,
+			DurationMs:   float64(m.Duration.Microseconds()) / 1000.0,
+		})
+	}
+	for _, f := range report.Failures() {
+		out.Failures = append(out.Failures, types.VerifierFailure{
+			Verifier: f.Verifier,
+			Key:      f.Key,
+			Expected: f.ExpectedValue,
+			Actual:   f.RecoveredValue,
+			Details:  f.Explanation,
+		})
+	}
+	return out
 }
